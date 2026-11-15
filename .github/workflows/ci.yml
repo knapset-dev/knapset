@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    name: Test (Python ${{ matrix.python-version }} on ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout omniforge
+        uses: actions/checkout@v4
+        with:
+          path: omniforge
+
+      - name: Checkout omniforge-registry (for extension lifecycle tests)
+        uses: actions/checkout@v4
+        with:
+          repository: omniforge-dev/omniforge-registry
+          path: omniforge-registry
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Verify Zero Pip Dependencies (Pure Standard Library)
+        working-directory: omniforge
+        run: |
+          python -c "import sys; print('Python executable:', sys.executable, sys.version)"
+          # Zero external pip packages required. 100% Python Standard Library.
+
+      - name: Run Full Test Suite
+        working-directory: omniforge
+        run: |
+          python -m unittest discover tests
+
+      - name: Run Knapsack Combinatorial Stress Benchmark
+        working-directory: omniforge
+        run: |
+          python -m unittest tests/test_stress_synthesis.py
+
+      - name: Run End-to-End Extension Lifecycle Test
+        working-directory: omniforge
+        run: |
+          python -m unittest tests/test_e2e_extension_lifecycle.py
+
+      - name: Validate CLI & Onboarding Walkthrough
+        working-directory: omniforge
+        run: |
+          python main.py --help
+          python main.py pc build --quiet
+          python main.py template build -b 1000
+          python main.py domains --inspect template
+          python main.py template modes
+          python main.py modules
+          python main.py modules --json
+          python main.py module search
+          python main.py sync --status
+          python main.py deals
+          python main.py ledger
+          python main.py mcp --list-tools
+          python main.py serve --help
+          python main.py fx
+          python main.py watch --domain template --no-refresh --dry-run

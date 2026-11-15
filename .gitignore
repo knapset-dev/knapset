@@ -1,0 +1,47 @@
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Market caches, audit decisions & local SQLite databases
+data/*_market_cache.json
+data/marketplace_cache.json
+data/.currency_cache.json
+data/fx_rates_cache.json
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.corrupt
+data/audit_ledger.json
+data/ai_verified_components.json
+data/pc/
+omniforge_market.db
+*.db
+*.db-shm
+*.db-wal
+
+# Installed runtime domain extensions (keep only the built-in template)
+extensions/*/
+!extensions/template/
+
+# Keep directory structure
+!data/.gitkeep
+
+# Environments, Secrets & Temp Files
+.env
+.env.*
+!.env.example
+*.tmp
+.venv/
+env/
+venv/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+.aider*
