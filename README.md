@@ -11,6 +11,12 @@ data/*_market_cache.json  --->  omniforge_market.db  --->  omniforge (core)  <--
 
 ---
 
+## Demo
+
+![OmniForge CLI demo showing SQLite sync and Best-Value vs Best optimization modes](docs/demo.gif)
+
+---
+
 ## What is in this repo
 
 - **Constraint solver (`set_synthesizer.py`, `domain_layout.py`)**: A generic N-slot beam-search solver that maximizes a domain's utility function under a budget and hard compatibility rules.
@@ -186,6 +192,7 @@ omniforge/
 ├── build_composer/          # Build composer plugin interface
 ├── ai_providers/            # Optional LLM / vision inspection plugin interface
 ├── configs/                 # Watchdog profiles and mode weight presets
+├── docs/                    # Domain guides and CLI demo media
 └── tests/                   # unittest suite (167 tests)
 ```
 
