@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-OmniForge Built-in Web Dashboard & REST API Server.
+Knapset Built-in Web Dashboard & REST API Server.
 
 100% Python Standard Library (`http.server`, `urllib.parse`, `json`, `threading`)
-zero-dependency interactive web interface and JSON API for OmniForge:
+zero-dependency interactive web interface and JSON API for Knapset:
   - Interactive Combinatorial Set & Build Synthesizer across all installed domains
   - Section Search & Filtering with live currency switching (USDT, USD, UAH, EUR, PLN, GBP, SEK)
   - Prebuilt PC Valuation & Head-to-Head Duel Comparator
@@ -43,7 +43,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>OmniForge — Universal Market Intelligence & Combinatorial Synthesizer</title>
+  <title>Knapset — Universal Market Intelligence & Combinatorial Synthesizer</title>
   <style>
     :root {
       --bg: #0b0f19;
@@ -246,7 +246,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <body>
   <header>
     <div class="brand">
-      <h1>OmniForge</h1>
+      <h1>Knapset</h1>
       <span class="badge">Python Stdlib</span>
       <span class="badge badge-green" id="store-badge">SQLite FTS5 Ready</span>
     </div>
@@ -600,7 +600,7 @@ def dispatch_api_request(path: str, query_params: Dict[str, List[str]]) -> Tuple
     if path == "/api/health":
         return 200, "application/json; charset=utf-8", {
             "status": "ok",
-            "service": "omniforge-web",
+            "service": "knapset-web",
             "active_currency": get_active_currency(),
             "supported_currencies": sorted(list(DEFAULT_EXCHANGE_RATES.keys())),
         }
@@ -850,12 +850,12 @@ def dispatch_api_request(path: str, query_params: Dict[str, List[str]]) -> Tuple
     return 404, "application/json; charset=utf-8", {"error": f"Unknown endpoint: {path}"}
 
 
-class OmniForgeHTTPRequestHandler(BaseHTTPRequestHandler):
-    """Zero-dependency HTTP handler serving the OmniForge Web Dashboard and JSON REST API."""
+class KnapsetHTTPRequestHandler(BaseHTTPRequestHandler):
+    """Zero-dependency HTTP handler serving the Knapset Web Dashboard and JSON REST API."""
 
     def log_message(self, format: str, *args: Any) -> None:
         # Clean, single-line request logging
-        sys.stderr.write(f"[OmniForge Web] {self.address_string()} - {format % args}\n")
+        sys.stderr.write(f"[Knapset Web] {self.address_string()} - {format % args}\n")
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
@@ -878,17 +878,17 @@ class OmniForgeHTTPRequestHandler(BaseHTTPRequestHandler):
 def run_web_server(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         prog="main.py serve",
-        description="Start the built-in OmniForge Web Dashboard & REST API Server (100% Python stdlib).",
+        description="Start the built-in Knapset Web Dashboard & REST API Server (100% Python stdlib).",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
     parser.add_argument("--port", "-p", type=int, default=8080, help="Bind port (default: 8080)")
     parser.add_argument("--open", action="store_true", help="Automatically open the dashboard in default web browser")
     args = parser.parse_args(argv or [])
 
-    server = ThreadingHTTPServer((args.host, args.port), OmniForgeHTTPRequestHandler)
+    server = ThreadingHTTPServer((args.host, args.port), KnapsetHTTPRequestHandler)
     url = f"http://{args.host}:{args.port}"
     print("\n" + "═" * 78)
-    print(f"  OmniForge Web Dashboard & REST API Server running at: {url}")
+    print(f"  Knapset Web Dashboard & REST API Server running at: {url}")
     print("═" * 78)
     print(f"  • Interactive UI   : {url}/")
     print(f"  • Domains API      : {url}/api/domains")
@@ -907,7 +907,7 @@ def run_web_server(argv: Optional[List[str]] = None) -> None:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nShutting down OmniForge Web Server...")
+        print("\nShutting down Knapset Web Server...")
     finally:
         server.server_close()
 

@@ -3,7 +3,7 @@ DEVELOPER BLUEPRINT: How to Create a New AI Provider Module.
 
 This blueprint demonstrates how to integrate any custom AI reasoning backend,
 local LLM server, or proprietary inference API (e.g., vLLM, LM Studio, Mistral,
-AWS Bedrock, Azure OpenAI) into the `omniforge` ecosystem.
+AWS Bedrock, Azure OpenAI) into the `knapset` ecosystem.
 
 ================================================================================
 STEP-BY-STEP INTEGRATION GUIDE:
@@ -57,7 +57,7 @@ class CustomAIProvider(BaseAIProvider):
     min_app_version: str = "1.0.0"
     category: str = "ai_backend"
     tags: List[str] = ["ai", "llm", "inference", "template"]
-    url: str = "https://github.com/omniforge-dev/omniforge"
+    url: str = "https://github.com/knapset-dev/knapset"
     description: str = "Exemplary blueprint for building decoupled standard-library AI inference providers."
 
     def is_ready(self) -> Tuple[bool, str]:

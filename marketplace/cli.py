@@ -349,7 +349,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
             print("\nNext steps:")
             print(f"  1. Edit your new module at:\n     {path}")
             print(f"  2. Validate security & contract compliance:\n     python main.py module verify {path}")
-            print("  3. When ready, submit a Pull Request to:\n     https://github.com/omniforge-dev/omniforge-registry\n")
+            print("  3. When ready, submit a Pull Request to:\n     https://github.com/knapset-dev/knapset-registry\n")
         else:
             print(f"\n[FAIL] Failed to scaffold module:\n{msg}\n", file=sys.stderr)
             sys.exit(1)

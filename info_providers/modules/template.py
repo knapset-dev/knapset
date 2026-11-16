@@ -3,7 +3,7 @@ DEVELOPER BLUEPRINT: How to Create a New Information Provider Module.
 
 This blueprint demonstrates how to integrate any third-party marketplace, classifieds site,
 or retail aggregator (e.g. Amazon, eBay, Allegro, Blocket, or custom JSON feeds)
-into the `omniforge` ecosystem.
+into the `knapset` ecosystem.
 
 ================================================================================
 STEP-BY-STEP INTEGRATION GUIDE:
@@ -51,7 +51,7 @@ class CustomMarketplaceProvider(BaseInfoProvider):
     min_app_version: str = "1.0.0"
     category: str = "marketplace"
     tags: List[str] = ["marketplace", "template", "classifieds"]
-    url: str = "https://github.com/omniforge-dev/omniforge"
+    url: str = "https://github.com/knapset-dev/knapset"
     description: str = "Exemplary blueprint for building decoupled marketplace information providers."
 
     # Pre-compiled regex patterns for refusal / escrow detection

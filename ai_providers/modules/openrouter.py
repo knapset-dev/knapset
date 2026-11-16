@@ -39,8 +39,8 @@ class OpenRouterProvider(BaseAIProvider):
         url = "https://openrouter.ai/api/v1/chat/completions"
         headers = {
             "Authorization": f"Bearer {key}",
-            "HTTP-Referer": "https://github.com/omniforge-dev/omniforge",
-            "X-Title": "OmniForge",
+            "HTTP-Referer": "https://github.com/knapset-dev/knapset",
+            "X-Title": "Knapset",
         }
         messages = []
         if system_prompt:

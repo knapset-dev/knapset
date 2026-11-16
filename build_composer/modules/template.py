@@ -3,7 +3,7 @@ DEVELOPER BLUEPRINT: How to Create a New Build & Set Composer Module.
 
 This blueprint demonstrates how to implement domain synthesizers for multi-component sets
 (e.g., Homelab Cluster, Custom Mechanical Keyboard, Hi-Fi Audio Studio, Sim Racing Rig,
-or Solar Power Station) in the `omniforge` ecosystem.
+or Solar Power Station) in the `knapset` ecosystem.
 
 ================================================================================
 STEP-BY-STEP INTEGRATION GUIDE:
@@ -43,7 +43,7 @@ class CustomDomainComposer(BaseBuildComposer):
     min_app_version: str = "1.0.0"
     category: str = "synthesis"
     tags: List[str] = ["composer", "optimizer", "synthesis", "template"]
-    url: str = "https://github.com/omniforge-dev/omniforge"
+    url: str = "https://github.com/knapset-dev/knapset"
     description: str = "Exemplary blueprint for building isolated combinatorial set synthesizers."
 
     def compose(

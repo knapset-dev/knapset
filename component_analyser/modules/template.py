@@ -3,7 +3,7 @@ DEVELOPER BLUEPRINT: How to Create a New Component Hardware Analyser Module.
 
 This blueprint demonstrates how to create hardware specification extractors and
 performance benchmarking engines (e.g., for NVMe SSDs, CPU Coolers, Cases, Monitors,
-or Networking Cards) in the `omniforge` ecosystem.
+or Networking Cards) in the `knapset` ecosystem.
 
 ================================================================================
 STEP-BY-STEP INTEGRATION GUIDE:
@@ -42,7 +42,7 @@ class CustomComponentAnalyser(BaseComponentAnalyser):
     min_app_version: str = "1.0.0"
     category: str = "hardware_spec"
     tags: List[str] = ["hardware", "specs", "database", "template"]
-    url: str = "https://github.com/omniforge-dev/omniforge"
+    url: str = "https://github.com/knapset-dev/knapset"
     description: str = "Exemplary blueprint for building isolated hardware specification identification modules."
 
     # Pre-compiled regex patterns for model extraction

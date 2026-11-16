@@ -1,5 +1,5 @@
 """
-OmniForge Deal Watchdog.
+Knapset Deal Watchdog.
 
 Periodically refreshes market data, detects verified price drops recorded in the
 SQLite MarketStore, and sends deduplicated alerts to Telegram and/or Discord.
@@ -26,7 +26,7 @@ def _post_json(url: str, payload: Dict[str, Any], timeout: float = 10.0) -> bool
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": "OmniForge-Watchdog/1.0"},
+        headers={"Content-Type": "application/json", "User-Agent": "Knapset-Watchdog/1.0"},
         method="POST",
     )
     try:
@@ -132,7 +132,7 @@ def run_watchdog_once(
     if not fresh:
         return result
 
-    text = f"OmniForge: {len(fresh)} new price drop(s) in '{domain_id}'\n\n" + "\n\n".join(
+    text = f"Knapset: {len(fresh)} new price drop(s) in '{domain_id}'\n\n" + "\n\n".join(
         format_drop_message(d) for d in fresh
     )
     result["message"] = text

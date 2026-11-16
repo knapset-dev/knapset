@@ -1,11 +1,11 @@
-# Omniforge
+# Knapset
 
-Omniforge is a local-first combinatorial optimization and market analysis framework written in Python (standard library only, 3.10+). It reads normalized item datasets from a local SQLite database, filters out defective or mispriced candidates through pluggable domain rules, and synthesizes compatible multi-slot sets within a budget.
+Knapset is a local-first combinatorial optimization and market analysis framework written in Python (standard library only, 3.10+). It reads normalized item datasets from a local SQLite database, filters out defective or mispriced candidates through pluggable domain rules, and synthesizes compatible multi-slot sets within a budget.
 
-The core repository is **domain-agnostic**. Domain schemas, scoring weights, compatibility rules, and defect analyzers can be declared via JSON blueprints (`DomainLayout`), scaffolded locally (`main.py module new`), or installed dynamically from an external extension registry (`omniforge-registry`).
+The core repository is **domain-agnostic**. Domain schemas, scoring weights, compatibility rules, and defect analyzers can be declared via JSON blueprints (`DomainLayout`), scaffolded locally (`main.py module new`), or installed dynamically from an external extension registry (`knapset-registry`).
 
 ```
-data/*_market_cache.json  --->  omniforge_market.db  --->  omniforge (core)  <---  omniforge-registry
+data/*_market_cache.json  --->  knapset_market.db  --->  knapset (core)  <---  knapset-registry
    (local JSON datasets)           (SQLite + FTS5)           (CLI / Web / MCP)        (domain plugins)
 ```
 
@@ -13,7 +13,9 @@ data/*_market_cache.json  --->  omniforge_market.db  --->  omniforge (core)  <--
 
 ## Demo
 
-![OmniForge CLI demo showing SQLite sync and Best-Value vs Best optimization modes](docs/demo.gif)
+- **Demo (`docs/demo.gif`)** shows the `ks` Unix CLI workflow (`domains`, anonymized market cache inspection, `sync`, and `value` vs `best` modes).
+
+![Knapset CLI demo showing SQLite sync and Best-Value vs Best optimization modes](docs/demo.gif)
 
 ---
 
@@ -40,13 +42,22 @@ data/*_market_cache.json  --->  omniforge_market.db  --->  omniforge (core)  <--
 
 ## Quick start
 
+### Installation & running
+
+From a source checkout (zero dependencies, Python 3.10+):
+
 ```bash
-git clone https://github.com/omniforge-dev/omniforge.git
-cd omniforge
+git clone https://github.com/knapset-dev/knapset.git
+cd knapset
+
+# Optional: install editable so 'ks' and 'knapset' are available in your shell
+pip install --no-build-isolation --no-deps -e .
 
 # Run the core test suite (uses the built-in 'template' domain)
 python3 -m unittest discover -s tests -v
 ```
+
+When packaged system-wide (e.g. via `pipx` or AUR / `packaging/aur/PKGBUILD`), `ks` / `knapset` automatically stores mutable databases, caches, configs, and installed plugins in `$XDG_DATA_HOME/knapset` and `$XDG_CONFIG_HOME/knapset` (`KNAPSET_HOME` overrides both).
 
 ### Built-in domains & installing extensions
 
@@ -59,13 +70,13 @@ python3 main.py template modes
 python3 main.py template core --limit 5
 ```
 
-You can also scaffold a custom domain locally (`python3 main.py module new --type extension --name my_domain`), or install domain packages (e.g., `fishing`, `pc`) from `omniforge-registry`:
+You can also scaffold a custom domain locally (`python3 main.py module new --type extension --name my_domain`), or install domain packages (e.g., `fishing`, `pc`) from `knapset-registry`:
 
 ```bash
-git clone https://github.com/omniforge-dev/omniforge-registry.git ../omniforge-registry
+git clone https://github.com/knapset-dev/knapset-registry.git ../knapset-registry
 
 # Point the marketplace client at your local registry checkout (or let it fetch from GitHub)
-export OMNIFORGE_REGISTRY_URL="file://$(realpath ../omniforge-registry)/registry.json"
+export KNAPSET_REGISTRY_URL="file://$(realpath ../knapset-registry)/registry.json"
 
 python3 main.py market list
 python3 main.py market install <extension-id>   # e.g. fishing, pc
@@ -83,7 +94,7 @@ python3 main.py <domain> modes
 
 ## Loading market data
 
-Omniforge is strictly offline-first and reads listing datasets from `data/omniforge_market.db` and user-supplied `data/*_market_cache.json` files. To index local JSON datasets into SQLite and check cache freshness:
+Knapset is strictly offline-first and reads listing datasets from `data/knapset_market.db` and user-supplied `data/*_market_cache.json` files. To index local JSON datasets into SQLite and check cache freshness:
 
 ```bash
 # Import existing data/*_market_cache.json files into SQLite:
@@ -153,9 +164,9 @@ Example Claude Desktop configuration:
 ```json
 {
   "mcpServers": {
-    "omniforge": {
+    "knapset": {
       "command": "python3",
-      "args": ["/absolute/path/to/omniforge/main.py", "mcp"]
+      "args": ["/absolute/path/to/knapset/main.py", "mcp"]
     }
   }
 }
@@ -166,7 +177,7 @@ Example Claude Desktop configuration:
 ## Repository layout
 
 ```
-omniforge/
+knapset/
 ├── main.py                  # CLI router
 ├── domain_layout.py         # DomainLayout / SectionSpec / CompatibilityRule dataclasses
 ├── set_synthesizer.py       # Beam-search constraint solver
@@ -193,7 +204,8 @@ omniforge/
 ├── ai_providers/            # Optional LLM / vision inspection plugin interface
 ├── configs/                 # Watchdog profiles and mode weight presets
 ├── docs/                    # Domain guides and CLI demo media
-└── tests/                   # unittest suite (167 tests)
+├── packaging/               # Distribution manifests (AUR PKGBUILD)
+└── tests/                   # unittest suite (170 tests)
 ```
 
 ---
@@ -204,7 +216,7 @@ omniforge/
 - **Single-process HTTP server**: `web_server.py` uses Python's standard `HTTPServer` and is meant for local use on `127.0.0.1`, not public deployment.
 - **AST audit is a smoke check**: `marketplace/client.py` rejects plugins that import `os`, `subprocess`, `socket`, `shutil`, or `ctypes` (unless listed in `_TRUSTED_NETWORK_MODULES`), and checks SHA-256 hashes against `registry.json`. It is not a sandbox; only install extensions from a registry you trust.
 - **Shared legacy helpers**: While domain extensions are fully decoupled via `DomainExtension`, `analyzer_core.py`, `scam_utils.py`, and `ai_inspector.py` still include optional defaults used by hardware-oriented extensions.
-- **Test fixtures**: Core unit tests run primarily against synthetic in-memory fixtures and non-PC example domains (`template`, photography equipment, smart-home devices in `tests/test_domain_universality.py`). Integration tests (`tests/test_e2e_extension_lifecycle.py`, `tests/test_prebuilt_evaluator.py`) also exercise installing extensions from a local `omniforge-registry` checkout.
+- **Test fixtures**: Core unit tests run primarily against synthetic in-memory fixtures and non-PC example domains (`template`, photography equipment, smart-home devices in `tests/test_domain_universality.py`). Integration tests (`tests/test_e2e_extension_lifecycle.py`, `tests/test_prebuilt_evaluator.py`) also exercise installing extensions from a local `knapset-registry` checkout.
 
 ---
 
@@ -214,4 +226,4 @@ omniforge/
 python3 -m unittest discover -s tests -v
 ```
 
-On a clean checkout (without pre-installed extensions), the test suite runs 167 tests (`166` passed, `1` skipped when `pc` is not pre-installed).
+On a clean checkout (without pre-installed extensions), the test suite runs 170 tests (`169` passed, `1` skipped when `pc` is not pre-installed).

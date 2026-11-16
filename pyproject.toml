@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "omniforge"
+name = "knapset"
 version = "1.0.0"
-description = "Zero-dependency framework for market intelligence, defect detection, and combinatorial set optimization."
+description = "Zero-dependency Unix CLI framework for market analysis, defect filtering, and combinatorial set optimization."
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "omniforge-dev", email = "omniforge-dev@users.noreply.github.com" }]
+authors = [{ name = "knapset-dev", email = "knapset-dev@users.noreply.github.com" }]
 license = { text = "MIT" }
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -24,13 +24,12 @@ classifiers = [
 ]
 
 [project.scripts]
-omniforge = "main:main"
-omni = "main:main"
-marketforge = "main:main"
-mf = "main:main"
+knapset = "main:main"
+ks = "main:main"
 
 [tool.setuptools]
 py-modules = [
+    "app_paths",
     "main",
     "currency",
     "analyzer_core",

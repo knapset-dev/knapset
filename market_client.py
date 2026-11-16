@@ -13,8 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
-INTEL_DIR = Path(__file__).resolve().parent
-INTEL_DATA_DIR = INTEL_DIR / "data"
+from app_paths import REPO_ROOT, get_data_dir
+
+INTEL_DIR = REPO_ROOT
+INTEL_DATA_DIR = get_data_dir()
 
 from provider_template import ProviderFeatureAdapter
 

@@ -116,13 +116,13 @@ class TestPrebuiltEvaluator(unittest.TestCase):
         with redirect_stdout(f_pc):
             main.main(["pc", "eval"])
         out_pc = f_pc.getvalue()
-        self.assertIn("OmniForge Prebuilt Evaluator & Head-to-Head Duel Comparator", out_pc)
+        self.assertIn("Knapset Prebuilt Evaluator & Head-to-Head Duel Comparator", out_pc)
 
         f_vs = io.StringIO()
         with redirect_stdout(f_vs):
             main.main(["pc", "vs", "Ryzen 5 3600, RTX 2060 Super 8GB, B450, 16GB DDR4, 500W, 18500 UAH"])
         out_vs = f_vs.getvalue()
-        self.assertIn("OMNIFORGE PREBUILT EVALUATOR & MARKET DUEL", out_vs)
+        self.assertIn("KNAPSET PREBUILT EVALUATOR & MARKET DUEL", out_vs)
         self.assertIn("VERDICT", out_vs)
 
         f_cmp = io.StringIO()
@@ -135,7 +135,7 @@ class TestPrebuiltEvaluator(unittest.TestCase):
                 "-M", "sweet-spot",
             ])
         out_cmp = f_cmp.getvalue()
-        self.assertIn("OMNIFORGE HEAD-TO-HEAD PREBUILT DUEL & COMPARATOR", out_cmp)
+        self.assertIn("KNAPSET HEAD-TO-HEAD PREBUILT DUEL & COMPARATOR", out_cmp)
         self.assertIn("COMPONENT MATCHUP", out_cmp)
         self.assertIn("ACTIVE MODE SCORE [SWEET-SPOT]", out_cmp)
         self.assertIn("WINNER", out_cmp)

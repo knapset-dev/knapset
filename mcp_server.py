@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-OmniForge Built-in Model Context Protocol (MCP) Server.
+Knapset Built-in Model Context Protocol (MCP) Server.
 
 Zero-dependency JSON-RPC 2.0 server over stdio (`stdin` / `stdout`) that exposes
-OmniForge's combinatorial optimization, market search, domain inspection, and
+Knapset's combinatorial optimization, market search, domain inspection, and
 prebuilt listing evaluation tools to AI agents (Claude Desktop, Cursor, Antigravity, etc.).
 
 Usage:
@@ -25,13 +25,13 @@ from extension_registry import get_extension, list_domain_ids, list_extensions, 
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {
-    "name": "omniforge-mcp",
+    "name": "knapset-mcp",
     "version": "1.0.0",
 }
 
 MCP_TOOLS: List[Dict[str, Any]] = [
     {
-        "name": "omniforge_list_domains",
+        "name": "knapset_list_domains",
         "description": "List all registered domain extensions, their structural sections, compatibility rules, and optimization modes.",
         "inputSchema": {
             "type": "object",
@@ -39,7 +39,7 @@ MCP_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "omniforge_build_set",
+        "name": "knapset_build_set",
         "description": "Synthesize optimal constraint-checked multi-component sets/builds under a target budget for a specified domain (e.g. 'template' or any installed extension).",
         "inputSchema": {
             "type": "object",
@@ -69,8 +69,8 @@ MCP_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "omniforge_search_section",
-        "description": "Search and score individual items within a domain section (see omniforge_list_domains for section ids) with optional query, price bounds, and criteria.",
+        "name": "knapset_search_section",
+        "description": "Search and score individual items within a domain section (see knapset_list_domains for section ids) with optional query, price bounds, and criteria.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -107,7 +107,7 @@ MCP_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
-        "name": "omniforge_price_drops",
+        "name": "knapset_price_drops",
         "description": "Query the SQLite MarketStore for verified historical seller price drops or inspect chronological price history for a specific offer ID.",
         "inputSchema": {
             "type": "object",
@@ -169,7 +169,7 @@ def execute_mcp_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
     rescan_extensions()
 
     try:
-        if name == "omniforge_list_domains":
+        if name == "knapset_list_domains":
             exts = list_extensions()
             payload = []
             for d_id, ext in exts.items():
@@ -194,7 +194,7 @@ def execute_mcp_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 "isError": False,
             }
 
-        elif name == "omniforge_build_set":
+        elif name == "knapset_build_set":
             domain = str(args.get("domain", "")).lower().strip()
             if not domain:
                 raise ValueError("Missing required parameter 'domain'.")
@@ -264,7 +264,7 @@ def execute_mcp_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 "isError": False,
             }
 
-        elif name == "omniforge_search_section":
+        elif name == "knapset_search_section":
             domain = str(args.get("domain", "")).lower().strip()
             section = str(args.get("section", "")).lower().strip()
             ext = get_extension(domain, fallback=False)
@@ -313,7 +313,7 @@ def execute_mcp_tool(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 "isError": False,
             }
 
-        elif name == "omniforge_price_drops":
+        elif name == "knapset_price_drops":
             from currency import canonical_currency, convert_currency
             from market_store import market_store
 
@@ -441,7 +441,7 @@ def handle_jsonrpc_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def run_mcp_stdio_server(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         prog="main.py mcp",
-        description="Run OmniForge Model Context Protocol (MCP) JSON-RPC 2.0 Server over stdio.",
+        description="Run Knapset Model Context Protocol (MCP) JSON-RPC 2.0 Server over stdio.",
     )
     parser.add_argument(
         "--list-tools",

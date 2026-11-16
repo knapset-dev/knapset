@@ -1,6 +1,6 @@
-# Omniforge Architecture
+# Knapset Architecture
 
-This document describes how the core framework (`omniforge`) and extension repository (`omniforge-registry`) fit together and how data moves from normalized listing datasets to ranked builds.
+This document describes how the core framework (`knapset`) and extension repository (`knapset-registry`) fit together and how data moves from normalized listing datasets to ranked builds.
 
 ---
 
@@ -8,8 +8,8 @@ This document describes how the core framework (`omniforge`) and extension repos
 
 | Repository | Responsibility | Runs network I/O? |
 | :--- | :--- | :--- |
-| **`omniforge`** | Storage (`market_store.py`), generic beam-search solver (`set_synthesizer.py`), CLI/Web/MCP interfaces, plugin installer (`marketplace/client.py`). | Only for opt-in FX rates (`currency.py`), webhook alerts (`watchdog.py`), optional LLM APIs, and downloading plugins from `omniforge-registry`. |
-| **`omniforge-registry`** | Out-of-tree plugins installed on demand: the `pc` domain extension, the `fishing` domain extension, and standalone modules. | No. |
+| **`knapset`** | Storage (`market_store.py`), generic beam-search solver (`set_synthesizer.py`), CLI/Web/MCP interfaces, plugin installer (`marketplace/client.py`). | Only for opt-in FX rates (`currency.py`), webhook alerts (`watchdog.py`), optional LLM APIs, and downloading plugins from `knapset-registry`. |
+| **`knapset-registry`** | Out-of-tree plugins installed on demand: the `pc` domain extension, the `fishing` domain extension, and standalone modules. | No. |
 
 ---
 
@@ -17,9 +17,9 @@ This document describes how the core framework (`omniforge`) and extension repos
 
 ```
 1. Local Dataset Input
-   data/<category>_market_cache.json  -->  main.py sync  -->  data/omniforge_market.db (listings, listings_fts, price_history)
+   data/<category>_market_cache.json  -->  main.py sync  -->  data/knapset_market.db (listings, listings_fts, price_history)
 
-2. Query & Optimization (omniforge + installed domain extension)
+2. Query & Optimization (knapset + installed domain extension)
    main.py / web_server.py / mcp_server.py
                -->  ExtensionRegistry.get(domain)
                -->  MarketClient / MarketStore (reads SQLite or JSON cache)
@@ -30,7 +30,7 @@ This document describes how the core framework (`omniforge`) and extension repos
 
 ---
 
-## 3. Core modules (`omniforge`)
+## 3. Core modules (`knapset`)
 
 ### `domain_layout.py` and `set_synthesizer.py`
 
@@ -72,7 +72,7 @@ Normalizes raw marketplace item dictionaries (such as `olx`, `telemart`, `hotlin
 - Installed domain extensions live under `extensions/<id>/` (with `extensions/template/` tracked in git and others gitignored).
 - Other plugin types (`info_providers`, `scam_analyser`, `component_analyser`, `build_composer`, `ai_providers`) install into `<subsystem>/modules/`. Note: in the current codebase, domain extensions (`extensions/<id>/`) and `info_providers` are actively invoked by the CLI/Web/MCP pipelines, whereas `scam_analyser`, `component_analyser`, and `build_composer` registries are loaded into memory but not yet called by `SetSynthesizer` or the PC extension's internal optimizer.
 - During `market install <id>`, `MarketplaceClient`:
-  1. Fetches `registry.json` from `OMNIFORGE_REGISTRY_URL` (defaults to the `omniforge-registry` GitHub raw URL, or a local `file://` path).
+  1. Fetches `registry.json` from `KNAPSET_REGISTRY_URL` (defaults to the `knapset-registry` GitHub raw URL, or a local `file://` path).
   2. Downloads each file listed in the manifest (or whole directory for multi-file packages).
   3. Verifies the SHA-256 digest of single-file modules against `manifest["sha256"]`.
   4. Parses every `.py` file with `ast.parse()` and rejects modules that import blocked system packages (`os`, `subprocess`, `socket`, `shutil`, `ctypes`, `pty`) unless the module ID is in `_TRUSTED_NETWORK_MODULES`.

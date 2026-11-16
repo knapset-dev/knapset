@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-OmniForge — Autonomous Combinatorial Market Intelligence & Optimization Framework.
+Knapset — Autonomous Combinatorial Market Intelligence & Optimization Framework.
 
 Zero-dependency combinatorial engine providing:
   - Combinatorial Set & Build Synthesizer (`build`)
@@ -45,13 +45,13 @@ def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool
         return
 
     print("\n" + "═" * 78)
-    print("  OmniForge — Zero-Dependency Combinatorial Market Analysis Framework")
+    print("  Knapset — Zero-Dependency Combinatorial Market Analysis Framework")
     print("═" * 78)
     if requested_domain and requested_domain not in ("template", "default"):
         print(f"\n  Notice: The '{requested_domain}' domain extension is not installed.")
     else:
         print("\n  Notice: No domain extensions installed yet.")
-        print("  OmniForge is domain-agnostic by default. Choose a domain package to begin:")
+        print("  Knapset is domain-agnostic by default. Choose a domain package to begin:")
 
     print("\n  Getting Started — Choose an Option:")
     print("  ────────────────────────────────────────────────────────────────────────────")
@@ -86,7 +86,7 @@ def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool
 def print_help() -> None:
     from extension_registry import list_extensions
 
-    print("\nOmniForge — Combinatorial Market Intelligence & Optimization Framework\n")
+    print("\nKnapset — Combinatorial Market Intelligence & Optimization Framework\n")
     print("Usage:")
     print("  python main.py <domain> <command> [options]   (Domain-scoped commands, e.g. '<domain> build')")
     print("  python main.py <system_command> [options]     (Core framework & package manager commands)\n")
@@ -254,7 +254,7 @@ def _run_sync(argv: List[str]) -> None:
                 target_domain = owner.domain_id
 
     if not cats:
-        print("\nOmniForge Local Market Store Synchronizer")
+        print("\nKnapset Local Market Store Synchronizer")
         print("═" * 80)
         print("Error: Missing sync target. Please specify which domain or category to index.\n")
         active_domains = {k: v for k, v in extensions.items() if k != "template"}
@@ -584,7 +584,7 @@ def _run_fx(argv: List[str]) -> None:
     print(f"\nExchange rates per 1 USDT ({src}):")
     for code in sorted(rates):
         print(f"  {code:<6} {rates[code]:>10.4f}")
-    print("\nTip: run 'main.py fx --refresh' then use --live-rates (or OMNIFORGE_LIVE_RATES=1) to apply cached live rates.\n")
+    print("\nTip: run 'main.py fx --refresh' then use --live-rates (or KNAPSET_LIVE_RATES=1) to apply cached live rates.\n")
 
 
 def _run_ledger(argv: List[str]) -> None:

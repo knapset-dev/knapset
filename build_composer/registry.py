@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 from typing import Any, Dict, List, Optional, Type
 
+from app_paths import collect_module_candidates, get_subsystem_dirs
 from build_composer.base import BaseBuildComposer, ComposerSetResult
 
 
@@ -19,6 +20,7 @@ class BuildComposerRegistry:
     """Discovers, tracks, and invokes domain build composers."""
 
     def __init__(self, modules_dir: Optional[Path] = None):
+        self._explicit_dir = modules_dir is not None
         self._modules_dir = modules_dir or (Path(__file__).resolve().parent / "modules")
         self._composers: Dict[str, BaseBuildComposer] = {}
         self._composer_classes: Dict[str, Type[BaseBuildComposer]] = {}
@@ -42,23 +44,8 @@ class BuildComposerRegistry:
             self._module_files.clear()
             self._errors.clear()
 
-        if not self._modules_dir.exists():
-            return
-
-        candidates = []
-        for py_file in sorted(self._modules_dir.glob("*.py")):
-            if py_file.stem in ("template", "base") or py_file.name.startswith(("_", ".")):
-                continue
-            candidates.append((py_file.stem, py_file, None))
-
-        for dir_path in sorted(self._modules_dir.iterdir()):
-            if not dir_path.is_dir() or dir_path.name.startswith(("_", ".")):
-                continue
-            if dir_path.name in ("template", "base", "__pycache__"):
-                continue
-            init_file = dir_path / "__init__.py"
-            if init_file.is_file():
-                candidates.append((dir_path.name, init_file, dir_path))
+        dirs = [self._modules_dir] if self._explicit_dir else get_subsystem_dirs("build_composer/modules")
+        candidates = collect_module_candidates(dirs)
 
         for mod_stem, entry_file, pkg_dir in candidates:
             mod_name = f"build_composer.modules.{mod_stem}"

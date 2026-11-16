@@ -22,6 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from app_paths import get_data_dir, get_plugins_root
 from marketplace.models import (
     BundleManifest,
     InstalledModuleRecord,
@@ -37,24 +38,24 @@ logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.0"
 OFFICIAL_REMOTE_REGISTRY_URL = (
-    "https://raw.githubusercontent.com/omniforge-dev/omniforge-registry/main/registry.json"
+    "https://raw.githubusercontent.com/knapset-dev/knapset-registry/main/registry.json"
 )
 
 
 def locate_registry_dir() -> Path:
     """
-    Resolves the local omniforge-registry directory when present on disk:
-    1. $OMNIFORGE_REGISTRY environment variable
-    2. Sibling ../omniforge-registry checkout next to the core repository
+    Resolves the local knapset-registry directory when present on disk:
+    1. $KNAPSET_REGISTRY environment variable
+    2. Sibling ../knapset-registry checkout next to the core repository
     3. Legacy marketplace/sample_registry fallback path
     """
-    env_dir = os.environ.get("OMNIFORGE_REGISTRY", "").strip()
+    env_dir = os.environ.get("KNAPSET_REGISTRY", "").strip()
     if env_dir:
         p = Path(env_dir).expanduser().resolve()
         if p.exists():
             return p
     repo_root = Path(__file__).resolve().parent.parent
-    sibling = repo_root.parent / "omniforge-registry"
+    sibling = repo_root.parent / "knapset-registry"
     if sibling.is_dir():
         return sibling
     return Path(__file__).resolve().parent / "sample_registry"
@@ -125,16 +126,16 @@ TYPE_ALIASES = {
 
 
 class MarketplaceClient:
-    """Core package manager and marketplace client for OmniForge."""
+    """Core package manager and marketplace client for Knapset."""
 
     def __init__(
         self,
         registry_url_or_path: Optional[str] = None,
         root_dir: Optional[Union[str, Path]] = None,
     ):
-        self.root_dir = Path(root_dir or Path.cwd()).resolve()
+        self.root_dir = Path(root_dir or get_plugins_root()).resolve()
         self.registry_source = registry_url_or_path or OFFICIAL_REMOTE_REGISTRY_URL
-        self.data_dir = self.root_dir / "data"
+        self.data_dir = (self.root_dir / "data") if root_dir is not None else get_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.installed_file = self.data_dir / "installed_modules.json"
         self.cache_file = self.data_dir / "marketplace_cache.json"

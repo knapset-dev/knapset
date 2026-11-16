@@ -1,5 +1,5 @@
 {
-  "_comment": "Universal Dynamic Currency Configuration for OmniForge. Default currency is USDT.",
+  "_comment": "Universal Dynamic Currency Configuration for Knapset. Default currency is USDT.",
   "default_currency": "USDT",
   "rates": {
     "USDT": 1.0,

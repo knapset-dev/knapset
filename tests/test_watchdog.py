@@ -1,4 +1,4 @@
-"""Unit tests for the OmniForge deal watchdog (watchdog.py) and MarketStore alert_log."""
+"""Unit tests for the Knapset deal watchdog (watchdog.py) and MarketStore alert_log."""
 
 from __future__ import annotations
 

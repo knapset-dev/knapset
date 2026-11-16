@@ -1,5 +1,5 @@
 """
-Unit Tests for OmniForge Dynamic Currency Engine (currency.py).
+Unit Tests for Knapset Dynamic Currency Engine (currency.py).
 Tests USDT/USD/UAH/EUR conversion, formatting, listing normalization,
 candidate pool normalization, and CLI --currency / --rate flags.
 """

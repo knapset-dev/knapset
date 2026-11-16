@@ -1,5 +1,5 @@
 """
-OmniForge Dynamic Currency Engine.
+Knapset Dynamic Currency Engine.
 
 Provides universal multi-currency support, dynamic exchange rate conversion,
 live rate synchronization with offline fallback, and consistent price formatting.
@@ -17,10 +17,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-REPO_ROOT = Path(__file__).resolve().parent
-CONFIGS_DIR = REPO_ROOT / "configs"
-DATA_DIR = REPO_ROOT / "data"
-CONFIG_FILE = CONFIGS_DIR / "currency.json"
+from app_paths import REPO_ROOT, get_config_file, get_data_dir
+
+CONFIGS_DIR = get_config_file("currency.json").parent
+DATA_DIR = get_data_dir()
+CONFIG_FILE = get_config_file("currency.json")
 CACHE_FILE = DATA_DIR / ".currency_cache.json"
 
 DEFAULT_CURRENCY = "USDT"
@@ -98,7 +99,7 @@ def get_active_currency() -> str:
     Returns the currently active target currency.
     Priority:
     1. Runtime override (via CLI --currency or set_active_currency)
-    2. Environment variable `OMNIFORGE_CURRENCY`
+    2. Environment variable `KNAPSET_CURRENCY`
     3. Config file `configs/currency.json`
     4. Default: "USDT"
     """
@@ -106,7 +107,7 @@ def get_active_currency() -> str:
     if _RUNTIME_ACTIVE_CURRENCY:
         return _RUNTIME_ACTIVE_CURRENCY
 
-    env_val = os.getenv("OMNIFORGE_CURRENCY")
+    env_val = os.getenv("KNAPSET_CURRENCY")
     if env_val:
         return canonical_currency(env_val)
 
@@ -193,7 +194,7 @@ def fetch_live_rates(timeout_sec: float = 1.2, cache_hours: float = 24.0) -> Dic
     try:
         req = urllib.request.Request(
             "https://api.binance.com/api/v3/ticker/price?symbol=USDTUAH",
-            headers={"User-Agent": "OmniForge/1.0"},
+            headers={"User-Agent": "Knapset/1.0"},
         )
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -210,7 +211,7 @@ def fetch_live_rates(timeout_sec: float = 1.2, cache_hours: float = 24.0) -> Dic
         try:
             req = urllib.request.Request(
                 "https://open.er-api.com/v6/latest/USD",
-                headers={"User-Agent": "OmniForge/1.0"},
+                headers={"User-Agent": "Knapset/1.0"},
             )
             with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -248,10 +249,10 @@ def set_live_rates_enabled(enabled: bool) -> None:
 
 
 def live_rates_enabled() -> bool:
-    """Live rates are opt-in: CLI --live-rates or env OMNIFORGE_LIVE_RATES=1 (keeps offline runs deterministic)."""
+    """Live rates are opt-in: CLI --live-rates or env KNAPSET_LIVE_RATES=1 (keeps offline runs deterministic)."""
     if _RUNTIME_LIVE_RATES is not None:
         return _RUNTIME_LIVE_RATES
-    return os.getenv("OMNIFORGE_LIVE_RATES", "").strip().lower() in ("1", "true", "yes", "on")
+    return os.getenv("KNAPSET_LIVE_RATES", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_cached_rates(max_age_hours: float = 24.0 * 7) -> Dict[str, float]:
@@ -304,8 +305,8 @@ def get_active_rates() -> Dict[str, float]:
     if live_rates_enabled():
         rates.update(load_cached_rates())
 
-    # Environment variable OMNIFORGE_RATES
-    env_rates = os.getenv("OMNIFORGE_RATES")
+    # Environment variable KNAPSET_RATES
+    env_rates = os.getenv("KNAPSET_RATES")
     if env_rates:
         parse_rate_string(env_rates)
 

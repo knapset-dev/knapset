@@ -39,12 +39,15 @@ if ROOT_DIR.name == "ai_providers":
     ROOT_DIR = ROOT_DIR.parent
 
 
+from app_paths import get_config_dir
+
 def _load_dotenv_files():
     """Lightweight zero-dependency .env loader (does not overwrite existing env vars)."""
     candidates = [
         ROOT_DIR / ".env",
         Path.cwd() / ".env",
-        Path.home() / ".config" / "hmi" / ".env",
+        get_config_dir() / ".env",
+        Path.home() / ".config" / "knapset" / ".env",
     ]
     seen = set()
     for env_path in candidates:
@@ -634,7 +637,7 @@ class AIProviderClient:
         if provider == "openrouter":
             url = "https://openrouter.ai/api/v1/chat/completions"
             key = self.api_key or os.environ.get("OPENROUTER_API_KEY", "")
-            extra_headers = {"HTTP-Referer": "https://github.com/omniforge-dev/omniforge", "X-Title": "OmniForge"}
+            extra_headers = {"HTTP-Referer": "https://github.com/knapset-dev/knapset", "X-Title": "Knapset"}
             return self._call_openai_compatible(url, key, model, prompt, system_prompt, json_mode=False, extra_headers=extra_headers)
         if provider == "mistral":
             url = "https://api.mistral.ai/v1/chat/completions"
@@ -852,7 +855,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         try:
             client = AIProviderClient(provider=args.test, model=args.model, base_url=args.base_url, timeout=30.0)
             res, used_p, used_m = client.generate_json(
-                'Return ONLY valid JSON: {"status": "ok", "engine": "omniforge"}'
+                'Return ONLY valid JSON: {"status": "ok", "engine": "knapset"}'
             )
             dt = time.perf_counter() - t0
             print(f"Success in {dt:.2f}s via {used_p} [{used_m}]: {json.dumps(res)}")

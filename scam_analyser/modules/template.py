@@ -3,7 +3,7 @@ DEVELOPER BLUEPRINT: How to Create a New Category Scam & Defect Analyser Module.
 
 This blueprint demonstrates how to create category-specific defect and fraud detectors
 (e.g., for Laptops, Monitors, NVMe SSDs, Handheld Consoles, Audio Equipment, or Drones)
-in the `omniforge` ecosystem.
+in the `knapset` ecosystem.
 
 ================================================================================
 STEP-BY-STEP INTEGRATION GUIDE:
@@ -45,7 +45,7 @@ class CustomCategoryScamAnalyser(BaseScamAnalyser):
     min_app_version: str = "1.0.0"
     category: str = "defect_analysis"
     tags: List[str] = ["security", "defect_detection", "template"]
-    url: str = "https://github.com/omniforge-dev/omniforge"
+    url: str = "https://github.com/knapset-dev/knapset"
     description: str = "Exemplary blueprint for building isolated category defect and scam detection modules."
 
     # Pre-compiled regex triggers for optimal microsecond execution

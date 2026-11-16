@@ -164,7 +164,7 @@ builds = run_build_optimizer(
 ## 6. Architecture & File Layout
 
 ```
-omniforge/
+knapset/
 ├── build_composer/
 │   ├── base.py                   # BaseBuildComposer & ComposerSetResult contract
 │   ├── registry.py               # Auto-discovery registry & alias resolver ("pc:builder" -> "pc")

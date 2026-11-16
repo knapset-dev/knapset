@@ -14,7 +14,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+from app_paths import get_data_dir
+
+DATA_DIR = get_data_dir()
 LEDGER_FILE = DATA_DIR / "audit_ledger.json"
 
 

@@ -1,5 +1,5 @@
 """
-OmniForge SQLite + FTS5 Market Storage & Price History Engine.
+Knapset SQLite + FTS5 Market Storage & Price History Engine.
 
 Zero-dependency (`sqlite3` Python Standard Library) persistent storage providing:
   - WAL-mode concurrent read/write access across CLI, Web, and MCP processes
@@ -16,7 +16,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_DB_PATH = Path(__file__).resolve().parent / "data" / "omniforge_market.db"
+from app_paths import get_data_dir
+
+DEFAULT_DB_PATH = get_data_dir() / "knapset_market.db"
 
 
 class MarketStore:

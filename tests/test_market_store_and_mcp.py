@@ -139,39 +139,39 @@ class TestMarketStoreAndMCP(unittest.TestCase):
         init_resp = handle_jsonrpc_message({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertEqual(init_resp["id"], 1)
         self.assertIn("protocolVersion", init_resp["result"])
-        self.assertEqual(init_resp["result"]["serverInfo"]["name"], "omniforge-mcp")
+        self.assertEqual(init_resp["result"]["serverInfo"]["name"], "knapset-mcp")
 
         # 2. tools/list
         list_resp = handle_jsonrpc_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         tools = list_resp["result"]["tools"]
         tool_names = {t["name"] for t in tools}
-        self.assertIn("omniforge_list_domains", tool_names)
-        self.assertIn("omniforge_build_set", tool_names)
-        self.assertIn("omniforge_search_section", tool_names)
-        self.assertIn("omniforge_evaluate_prebuilt_pc", tool_names)
-        self.assertIn("omniforge_price_drops", tool_names)
+        self.assertIn("knapset_list_domains", tool_names)
+        self.assertIn("knapset_build_set", tool_names)
+        self.assertIn("knapset_search_section", tool_names)
+        self.assertIn("knapset_evaluate_prebuilt_pc", tool_names)
+        self.assertIn("knapset_price_drops", tool_names)
 
-        # 3. tools/call -> omniforge_list_domains
+        # 3. tools/call -> knapset_list_domains
         dom_resp = handle_jsonrpc_message({
             "jsonrpc": "2.0",
             "id": 3,
             "method": "tools/call",
-            "params": {"name": "omniforge_list_domains", "arguments": {}},
+            "params": {"name": "knapset_list_domains", "arguments": {}},
         })
         self.assertFalse(dom_resp["result"]["isError"])
         dom_data = json.loads(dom_resp["result"]["content"][0]["text"])
         self.assertTrue(any(d["domain_id"] == "template" for d in dom_data["domains"]))
 
-        # 4. tools/call -> omniforge_build_set on 'template'
-        build_res = execute_mcp_tool("omniforge_build_set", {"domain": "template", "budget": 1000, "currency": "USDT"})
+        # 4. tools/call -> knapset_build_set on 'template'
+        build_res = execute_mcp_tool("knapset_build_set", {"domain": "template", "budget": 1000, "currency": "USDT"})
         self.assertFalse(build_res["isError"])
         build_data = json.loads(build_res["content"][0]["text"])
         self.assertEqual(build_data["domain"], "template")
         self.assertEqual(build_data["currency"], "USDT")
         self.assertGreater(build_data["count"], 0)
 
-        # 5. tools/call -> omniforge_price_drops
-        drops_res = execute_mcp_tool("omniforge_price_drops", {"domain": "pc", "min_drop_pct": 5.0, "currency": "USDT"})
+        # 5. tools/call -> knapset_price_drops
+        drops_res = execute_mcp_tool("knapset_price_drops", {"domain": "pc", "min_drop_pct": 5.0, "currency": "USDT"})
         self.assertFalse(drops_res["isError"])
         drops_data = json.loads(drops_res["content"][0]["text"])
         self.assertEqual(drops_data["currency"], "USDT")
@@ -183,7 +183,7 @@ class TestMarketStoreAndMCP(unittest.TestCase):
         code, ctype, body = dispatch_api_request("/", {})
         self.assertEqual(code, 200)
         self.assertIn("text/html", ctype)
-        self.assertIn("OmniForge", body)
+        self.assertIn("Knapset", body)
         self.assertIn("Set & Build Synthesizer", body)
 
         # 2. /api/health
@@ -260,7 +260,7 @@ class TestMarketStoreAndMCP(unittest.TestCase):
             "id": 88,
             "method": "tools/call",
             "params": {
-                "name": "omniforge_search_section",
+                "name": "knapset_search_section",
                 "arguments": {"domain": "template", "section": "invalid_sec"},
             },
         })
@@ -278,7 +278,7 @@ class TestMarketStoreAndMCP(unittest.TestCase):
             "id": 89,
             "method": "tools/call",
             "params": {
-                "name": "omniforge_build_set",
+                "name": "knapset_build_set",
                 "arguments": {"domain": "template", "budget": 1000},
             },
         })

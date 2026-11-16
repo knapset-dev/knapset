@@ -18,6 +18,7 @@ data/*.corrupt
 data/audit_ledger.json
 data/ai_verified_components.json
 data/pc/
+knapset_market.db
 omniforge_market.db
 *.db
 *.db-shm

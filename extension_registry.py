@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from analyzer_core import make_terminal_link, pad_ansi
+from app_paths import get_blueprints_dirs, get_subsystem_dirs
 from currency import (
     canonical_currency,
     convert_currency,
@@ -36,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 _REGISTRY: Dict[str, BaseDomainExtension] = {}
 _MANUAL_REGISTRY: Dict[str, BaseDomainExtension] = {}
-BLUEPRINTS_DIR = Path(__file__).resolve().parent / "configs" / "blueprints"
+BLUEPRINTS_DIR = get_blueprints_dirs()[0]
 
 
 class _BlueprintSearchInstruction(BaseSearchInstruction):
@@ -394,9 +395,10 @@ def _initialize_registry() -> None:
     if _REGISTRY:
         return
 
-    # 1. Auto-discover Python domain extension sub-packages in extensions/
-    ext_dir = Path(__file__).parent / "extensions"
-    if ext_dir.is_dir():
+    # 1. Auto-discover Python domain extension sub-packages in bundled + XDG extensions/
+    for ext_dir in get_subsystem_dirs("extensions"):
+        if not ext_dir.is_dir():
+            continue
         for sub in sorted(ext_dir.iterdir()):
             if sub.is_dir() and not sub.name.startswith(("_", ".")):
                 init_file = sub / "__init__.py"
@@ -416,9 +418,14 @@ def _initialize_registry() -> None:
                     except Exception as e:
                         logger.debug("Could not auto-load extension %s: %s", sub.name, e)
 
-    # 2. Auto-discover declarative JSON blueprints in configs/blueprints/*.json
-    if BLUEPRINTS_DIR.is_dir():
-        for bp_file in sorted(BLUEPRINTS_DIR.glob("*.json")):
+    # 2. Auto-discover declarative JSON blueprints in user + bundled configs/blueprints/*.json
+    bp_dirs = list(get_blueprints_dirs())
+    if BLUEPRINTS_DIR.resolve() not in [d.resolve() for d in bp_dirs]:
+        bp_dirs.insert(0, BLUEPRINTS_DIR)
+    for bp_dir in bp_dirs:
+        if not bp_dir.is_dir():
+            continue
+        for bp_file in sorted(bp_dir.glob("*.json")):
             if bp_file.name.startswith(("_", ".")):
                 continue
             try:

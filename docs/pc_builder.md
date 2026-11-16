@@ -169,7 +169,7 @@ builds = run_build_optimizer(
 ## 6. Architecture & File Layout
 
 ```
-omniforge/
+knapset/
 ├── build_composer/
 │   ├── base.py                   # BaseBuildComposer & ComposerSetResult contract
 │   ├── registry.py               # Auto-discovery registry & alias resolver ("pc:builder" -> "pc")
@@ -181,6 +181,6 @@ omniforge/
 │   ├── prebuilt_evaluator.py     # Prebuilt PC listing evaluator & DIY comparator
 │   ├── modes.py                  # Multi-objective Pareto scoring profiles & weights
 │   └── cli.py                    # PC domain CLI dispatcher ('pc build', 'pc prebuilt', etc.)
-├── data/                         # Local market caches (*_market_cache.json + omniforge_market.db)
+├── data/                         # Local market caches (*_market_cache.json + knapset_market.db)
 └── main.py                       # Unified CLI framework ('python3 main.py pc build')
 ```

@@ -1,7 +1,7 @@
 """
 End-to-End Cross-Domain Universality Tests.
 
-Proves that OmniForge is completely domain-agnostic by implementing
+Proves that Knapset is completely domain-agnostic by implementing
 a full non-PC photography equipment marketplace intelligence pipeline:
 - Info Provider: B&H/Adorama camera listing adapter
 - Scam Analyser: Camera shutter count & lens fungus detector

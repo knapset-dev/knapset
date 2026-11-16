@@ -1,6 +1,6 @@
-# Contributing to OmniForge
+# Contributing to Knapset
 
-Thank you for your interest in contributing to **OmniForge**.
+Thank you for your interest in contributing to **Knapset**.
 Our project is built on three core principles:
 1. **Zero External Dependencies** — strictly Python Standard Library (no `pip install` required).
 2. **High Performance** — sub-millisecond lookups without heavy framework overhead.

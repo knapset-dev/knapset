@@ -17,16 +17,16 @@ jobs:
         python-version: ['3.10', '3.11', '3.12', '3.13']
 
     steps:
-      - name: Checkout omniforge
+      - name: Checkout knapset
         uses: actions/checkout@v4
         with:
-          path: omniforge
+          path: knapset
 
-      - name: Checkout omniforge-registry (for extension lifecycle tests)
+      - name: Checkout knapset-registry (for extension lifecycle tests)
         uses: actions/checkout@v4
         with:
-          repository: omniforge-dev/omniforge-registry
-          path: omniforge-registry
+          repository: knapset-dev/knapset-registry
+          path: knapset-registry
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -34,28 +34,28 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Verify Zero Pip Dependencies (Pure Standard Library)
-        working-directory: omniforge
+        working-directory: knapset
         run: |
           python -c "import sys; print('Python executable:', sys.executable, sys.version)"
           # Zero external pip packages required. 100% Python Standard Library.
 
       - name: Run Full Test Suite
-        working-directory: omniforge
+        working-directory: knapset
         run: |
           python -m unittest discover tests
 
       - name: Run Knapsack Combinatorial Stress Benchmark
-        working-directory: omniforge
+        working-directory: knapset
         run: |
           python -m unittest tests/test_stress_synthesis.py
 
       - name: Run End-to-End Extension Lifecycle Test
-        working-directory: omniforge
+        working-directory: knapset
         run: |
           python -m unittest tests/test_e2e_extension_lifecycle.py
 
       - name: Validate CLI & Onboarding Walkthrough
-        working-directory: omniforge
+        working-directory: knapset
         run: |
           python main.py --help
           python main.py pc build --quiet
