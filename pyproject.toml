@@ -50,6 +50,7 @@ py-modules = [
 
 [tool.setuptools.packages.find]
 include = [
+    "configs*",
     "extensions*",
     "marketplace*",
     "component_analyser*",
@@ -60,4 +61,4 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-"*" = ["configs/*.json", "configs/blueprints/*.json", "data/*.json", "docs/*.md"]
+"*" = ["*.json", "configs/*.json", "configs/blueprints/*.json", "data/*.json", "docs/*.md"]

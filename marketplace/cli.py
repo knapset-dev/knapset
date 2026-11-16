@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 from typing import List, Optional
 
+from app_paths import get_cli_prog
 from marketplace.client import MarketplaceClient
 
 
@@ -225,34 +226,35 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
         ok, msg = client.install(parsed.target, force=parsed.force)
         if ok:
             print(f"[OK] {msg}")
+            prog = get_cli_prog()
             # Contextual post-installation instructions
             target_clean = parsed.target.lower().strip()
             if target_clean in ("pc", "extension:pc", "domain:pc"):
                 print("\nQuick Start Guide for PC Extension:")
-                print("  • Synthesize PC Build under budget : python main.py pc build -b 850")
-                print("  • Explore optimization modes       : python main.py pc modes")
-                print("  • View PC domain CLI help          : python main.py pc --help")
-                print("  • Search individual hardware parts : python main.py pc gpu --help (or cpu, mobo, ram, psu)\n")
+                print(f"  • Synthesize PC Build under budget : {prog} pc build -b 850")
+                print(f"  • Explore optimization modes       : {prog} pc modes")
+                print(f"  • View PC domain CLI help          : {prog} pc --help")
+                print(f"  • Search individual hardware parts : {prog} pc gpu --help (or cpu, mobo, ram, psu)\n")
             elif target_clean in ("fishing", "extension:fishing", "domain:fishing"):
                 print("\nQuick Start Guide for Fishing Extension:")
-                print("  • Synthesize tackle set under budget : python main.py fishing build -b 150")
-                print("  • Explore fishing weight profiles    : python main.py fishing modes")
-                print("  • View Fishing domain CLI help       : python main.py fishing --help")
-                print("  • Search individual tackle parts     : python main.py fishing rod --help (or reel, line, bait)\n")
+                print(f"  • Synthesize tackle set under budget : {prog} fishing build -b 150")
+                print(f"  • Explore fishing weight profiles    : {prog} fishing modes")
+                print(f"  • View Fishing domain CLI help       : {prog} fishing --help")
+                print(f"  • Search individual tackle parts     : {prog} fishing rod --help (or reel, line, bait)\n")
             elif target_clean.startswith("bundle:") or "kit" in target_clean or "starter" in target_clean or "bundle" in msg.lower():
                 print("\nQuick Start Guide for Bundle / Kit:")
-                print("  • Inspect newly active modules : python main.py modules")
-                print("  • Run combinatorial solver     : python main.py pc build -b 850\n")
+                print(f"  • Inspect newly active modules : {prog} modules")
+                print(f"  • Run combinatorial solver     : {prog} pc build -b 850\n")
             elif "extension" in msg.lower():
                 ext_name = target_clean.split(":")[-1]
                 print(f"\nQuick Start Guide for '{ext_name}':")
-                print(f"  • Run optimal synthesis : python main.py {ext_name} build -b <budget>")
-                print(f"  • View domain CLI help  : python main.py {ext_name} --help")
-                print(f"  • Explore modes         : python main.py {ext_name} modes\n")
+                print(f"  • Run optimal synthesis : {prog} {ext_name} build -b <budget>")
+                print(f"  • View domain CLI help  : {prog} {ext_name} --help")
+                print(f"  • Explore modes         : {prog} {ext_name} modes\n")
             else:
                 print("\nQuick Start:")
-                print("  • Inspect active modules : python main.py modules")
-                print(f"  • View module config     : python main.py module config {parsed.target}\n")
+                print(f"  • Inspect active modules : {prog} modules")
+                print(f"  • View module config     : {prog} module config {parsed.target}\n")
         else:
             print(f"[FAIL] Failed to install '{parsed.target}':\n{msg}", file=sys.stderr)
             sys.exit(1)
@@ -281,7 +283,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
         print(f"\nInstalled Modules ({len(installed)} active)")
         print("═" * 84)
         if not installed:
-            print("No marketplace modules currently installed. Use 'main.py module search' to browse available packages.")
+            print(f"No marketplace modules currently installed. Use '{get_cli_prog()} module search' to browse available packages.")
             return
 
         w_name = 20

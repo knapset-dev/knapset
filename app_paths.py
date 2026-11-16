@@ -9,10 +9,19 @@ mutable databases, caches, configs, and installed plugins to XDG user dirs).
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parent
+
+
+def get_cli_prog() -> str:
+    """Returns the active CLI invocation prefix ('ks', 'knapset', or 'python3 main.py')."""
+    exe = Path(sys.argv[0]).name if sys.argv else ""
+    if exe in ("ks", "knapset"):
+        return exe
+    return "python3 main.py"
 
 
 def _is_writable_dir(path: Path) -> bool:

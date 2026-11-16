@@ -18,6 +18,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
+from app_paths import get_cli_prog as _cli_prog
+
 APP_VERSION = "1.0.0"
 
 SUBCOMMANDS = {
@@ -35,13 +37,6 @@ SUBCOMMANDS = {
     "watch": "Deal watchdog: refresh markets and alert (Telegram/Discord) on verified price drops",
     "fx": "Show exchange rates; 'fx --refresh' fetches live rates into the local cache",
 }
-
-
-def _cli_prog() -> str:
-    exe = Path(sys.argv[0]).name if sys.argv else ""
-    if exe in ("ks", "knapset"):
-        return exe
-    return "python3 main.py"
 
 
 def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool = False) -> None:
@@ -395,8 +390,9 @@ def _run_domains(argv: List[str]) -> None:
         sec_keys = ", ".join(s.id for s in layout.sections) if layout and hasattr(layout, "sections") else "N/A"
         print(f"  {d_id:<12} │ {ext.title:<34} │ {sec_keys}")
     print("─" * 82)
-    print("Use 'python main.py <domain> build --budget <amount>' to synthesize sets.")
-    print("Use 'python main.py domains --inspect <id>' to view layout & compatibility rules.\n")
+    prog = _cli_prog()
+    print(f"Use '{prog} <domain> build --budget <amount>' to synthesize sets.")
+    print(f"Use '{prog} domains --inspect <id>' to view layout & compatibility rules.\n")
 
 
 def _run_search(argv: List[str]) -> None:
@@ -595,7 +591,7 @@ def _run_fx(argv: List[str]) -> None:
     print(f"\nExchange rates per 1 USDT ({src}):")
     for code in sorted(rates):
         print(f"  {code:<6} {rates[code]:>10.4f}")
-    print("\nTip: run 'main.py fx --refresh' then use --live-rates (or KNAPSET_LIVE_RATES=1) to apply cached live rates.\n")
+    print(f"\nTip: run '{_cli_prog()} fx --refresh' then use --live-rates (or KNAPSET_LIVE_RATES=1) to apply cached live rates.\n")
 
 
 def _run_ledger(argv: List[str]) -> None:
@@ -961,8 +957,8 @@ def main(argv: Optional[List[str]] = None) -> None:
                     f"Error: Section command '{cmd}' belongs to domain '{pkg}' (not installed) and must be prefixed with '{pkg}'.",
                     file=sys.stderr,
                 )
-                print(f"Install via: python main.py module install {pkg}", file=sys.stderr)
-                print(f"Then run   : python main.py {pkg} {cmd} <args>\n", file=sys.stderr)
+                print(f"Install via: {_cli_prog()} module install {pkg}", file=sys.stderr)
+                print(f"Then run   : {_cli_prog()} {pkg} {cmd} <args>\n", file=sys.stderr)
                 sys.exit(1)
 
             print(f"Error: Unknown subcommand '{cmd}'\n", file=sys.stderr)
