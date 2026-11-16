@@ -24,7 +24,7 @@ package() {
     "${pkgdir}/usr/lib/${pkgname}/"
 
   find "${pkgdir}/usr/lib/${pkgname}" -type d -name '__pycache__' -exec rm -rf {} +
-  python3 -m compileall -q "${pkgdir}/usr/lib/${pkgname}"
+  python3 -m compileall -d "/usr/lib/${pkgname}" -q "${pkgdir}/usr/lib/${pkgname}"
 
   cat <<'EOF' > "${pkgdir}/usr/bin/knapset"
 #!/usr/bin/env python3
