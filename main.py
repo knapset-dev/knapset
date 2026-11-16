@@ -18,6 +18,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional
 
+APP_VERSION = "1.0.0"
+
 SUBCOMMANDS = {
     "domains": "List registered domain extensions (Layouts & Weights)",
     "modules": "Inspect pluggable modules across all 5 decoupled subsystems",
@@ -33,6 +35,13 @@ SUBCOMMANDS = {
     "watch": "Deal watchdog: refresh markets and alert (Telegram/Discord) on verified price drops",
     "fx": "Show exchange rates; 'fx --refresh' fetches live rates into the local cache",
 }
+
+
+def _cli_prog() -> str:
+    exe = Path(sys.argv[0]).name if sys.argv else ""
+    if exe in ("ks", "knapset"):
+        return exe
+    return "python3 main.py"
 
 
 def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool = False) -> None:
@@ -72,12 +81,13 @@ def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool
     print()
     print("  Usage After Installing a Domain Package:")
     print("  ────────────────────────────────────────────────────────────────────────────")
-    print("  All domain commands are prefixed with the domain name:")
-    print("     • Optimal Set Synthesis    : python main.py <domain> build -b <budget> (e.g. main.py <domain> build -b 850)")
-    print("     • Domain Help & Commands   : python main.py <domain> --help (e.g. main.py <domain> --help)")
-    print("     • Individual Section Search: python main.py <domain> <section> (e.g. main.py <domain> <section> -q text)")
-    print("     • Explore Build Modes      : python main.py <domain> modes (e.g. main.py <domain> modes)")
-    print("     • Inspect Active Subsystems: python main.py modules")
+    prog = _cli_prog()
+    print("\n  All domain commands are prefixed with the domain name:")
+    print(f"     • Optimal Set Synthesis    : {prog} <domain> build -b <budget> (e.g. {prog} <domain> build -b 850)")
+    print(f"     • Domain Help & Commands   : {prog} <domain> --help")
+    print(f"     • Individual Section Search: {prog} <domain> <section> (e.g. {prog} <domain> <section> -q text)")
+    print(f"     • Explore Build Modes      : {prog} <domain> modes")
+    print(f"     • Inspect Active Subsystems: {prog} modules")
     print("  ────────────────────────────────────────────────────────────────────────────")
     print("  Note: You can suppress onboarding messages by passing --quiet or --no-tips.")
     print("═" * 78 + "\n")
@@ -86,10 +96,11 @@ def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool
 def print_help() -> None:
     from extension_registry import list_extensions
 
-    print("\nKnapset — Combinatorial Market Intelligence & Optimization Framework\n")
+    prog = _cli_prog()
+    print("\nKnapset — Combinatorial Market Analysis & Set Optimization Framework\n")
     print("Usage:")
-    print("  python main.py <domain> <command> [options]   (Domain-scoped commands, e.g. '<domain> build')")
-    print("  python main.py <system_command> [options]     (Core framework & package manager commands)\n")
+    print(f"  {prog} <domain> <command> [options]   (Domain-scoped commands, e.g. '<domain> build')")
+    print(f"  {prog} <system_command> [options]     (Core framework & package manager commands)\n")
     print("Global Currency Flags:")
     print("  --currency <CODE>   Set active target currency (default: USDT, e.g. USDT, USD, EUR, UAH)")
     print("  --rate <SPEC>       Override exchange rate(s), e.g. 'UAH:41.5' or 'EUR:0.92,UAH:42'\n")
@@ -116,17 +127,17 @@ def print_help() -> None:
         print(f"  {d_id:<11} {ext.title} (commands: build, modes, {sec_str})")
 
     if not installed:
-        print("\n  Note: No domain extensions installed yet. Run 'python main.py module search' to browse available packages.")
+        print(f"\n  Note: No domain extensions installed yet. Run '{prog} module search' to browse available packages.")
 
     print("\nExamples:")
-    print("  python main.py module search                             # Search the registry for extensions")
-    print("  python main.py module install <name>                     # Install a domain extension")
-    print("  python main.py template build -b 1000                    # Test the solver on the built-in template")
+    print(f"  {prog} module search                             # Search the registry for extensions")
+    print(f"  {prog} module install <name>                     # Install a domain extension")
+    print(f"  {prog} template build -b 1000                    # Test the solver on the built-in template")
     installed_examples = [d for d in extensions if d != "template"]
     if installed_examples:
         d0 = installed_examples[0]
-        print(f"  python main.py {d0} build -b 850                          # Build synthesis in the '{d0}' domain")
-        print(f"  python main.py --currency USD {d0} build -b 850           # Same, priced in USD")
+        print(f"  {prog} {d0} build -b 850                          # Build synthesis in the '{d0}' domain")
+        print(f"  {prog} --currency USD {d0} build -b 850           # Same, priced in USD")
     print()
 
 
@@ -840,6 +851,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             i += 1
     raw_args = filtered_args
 
+    if raw_args and raw_args[0] in ("-V", "--version", "version"):
+        print(f"knapset {APP_VERSION}")
+        return
+
     if not raw_args or raw_args[0] in ("-h", "--help", "help"):
         print_help()
         return
@@ -871,7 +886,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"Error: Section command '{cmd}' must be prefixed with its domain module name '{dom}'.",
                 file=sys.stderr,
             )
-            print(f"Usage: python main.py {dom} {cmd} {' '.join(extra)}".rstrip() + "\n", file=sys.stderr)
+            print(f"Usage: {_cli_prog()} {dom} {cmd} {' '.join(extra)}".rstrip() + "\n", file=sys.stderr)
             sys.exit(1)
 
         if cmd in ("build", "modes", "mods", "search", "find", "eval", "vs", "compare"):
@@ -882,7 +897,7 @@ def main(argv: Optional[List[str]] = None) -> None:
                 f"Error: Top-level '{cmd}' command must be scoped to a domain module (e.g. '{example_dom}').",
                 file=sys.stderr,
             )
-            print(f"Usage: python main.py {example_dom} {sub_cmd} <args>\n", file=sys.stderr)
+            print(f"Usage: {_cli_prog()} {example_dom} {sub_cmd} <args>\n", file=sys.stderr)
             sys.exit(1)
 
         # 3. Core system subcommands

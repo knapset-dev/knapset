@@ -52,11 +52,14 @@ From a source checkout (zero dependencies, Python 3.10+):
 git clone https://github.com/knapset-dev/knapset.git
 cd knapset
 
-# Optional: install editable so 'ks' and 'knapset' are available in your shell
-pip install --no-build-isolation --no-deps -e .
+# Install globally so 'ks' and 'knapset' launch from any directory:
+uv tool install https://github.com/knapset-dev/knapset.git
+# Or from a local checkout:
+uv tool install -e .
 
-# Run the core test suite (uses the built-in 'template' domain)
-python3 -m unittest discover -s tests -v
+# Run from anywhere once installed:
+ks --help
+ks template build -b 1000
 ```
 
 When packaged system-wide (e.g. via `pipx` or AUR / `packaging/aur/PKGBUILD`), `ks` / `knapset` automatically stores mutable databases, caches, configs, and installed plugins in `$XDG_DATA_HOME/knapset` and `$XDG_CONFIG_HOME/knapset` (`KNAPSET_HOME` overrides both).
