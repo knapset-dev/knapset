@@ -1,6 +1,8 @@
+<img src="docs/logo.png" alt="Knapset logo" width="96" height="96" align="right" />
+
 # Knapset
 
-Knapset is a local-first combinatorial optimization and market analysis framework written in Python (standard library only, 3.10+). It reads normalized item datasets from a local SQLite database, filters out defective or mispriced candidates through pluggable domain rules, and synthesizes compatible multi-slot sets within a budget.
+Knapset is a dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets. It reads normalized item datasets from a local SQLite database, filters out defective or mispriced candidates through pluggable domain rules, and synthesizes compatible multi-slot sets within a budget (CLI: `ks` / `knapset`).
 
 The core repository is **domain-agnostic**. Domain schemas, scoring weights, compatibility rules, and defect analyzers can be declared via JSON blueprints (`DomainLayout`), scaffolded locally (`main.py module new`), or installed dynamically from an external extension registry (`knapset-registry`).
 
@@ -203,7 +205,7 @@ knapset/
 ├── build_composer/          # Build composer plugin interface
 ├── ai_providers/            # Optional LLM / vision inspection plugin interface
 ├── configs/                 # Watchdog profiles and mode weight presets
-├── docs/                    # Domain guides and CLI demo media
+├── docs/                    # Domain guides, logo assets, and CLI demo GIF
 ├── packaging/               # Distribution manifests (AUR PKGBUILD)
 └── tests/                   # unittest suite (170 tests)
 ```

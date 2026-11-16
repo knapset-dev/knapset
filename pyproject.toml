@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "knapset"
 version = "1.0.0"
-description = "Zero-dependency Unix CLI framework for market analysis, defect filtering, and combinatorial set optimization."
+description = "Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "knapset-dev", email = "knapset-dev@users.noreply.github.com" }]
