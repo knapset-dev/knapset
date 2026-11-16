@@ -46,23 +46,31 @@ data/*_market_cache.json  --->  knapset_market.db  --->  knapset (core)  <---  k
 
 ### Installation & running
 
-From a source checkout (zero dependencies, Python 3.10+):
+Install globally (`ks` and `knapset` commands in `$PATH`):
 
 ```bash
-git clone https://github.com/knapset-dev/knapset.git
-cd knapset
+# Arch Linux / CachyOS (AUR):
+paru -S knapset
+# Or build locally from packaging/aur/PKGBUILD:
+cd packaging/aur && makepkg -si
 
-# Install globally so 'ks' and 'knapset' launch from any directory:
+# Cross-platform via uv (zero external Python dependencies):
 uv tool install https://github.com/knapset-dev/knapset.git
-# Or from a local checkout:
-uv tool install -e .
 
-# Run from anywhere once installed:
+# Run from any directory once installed:
 ks --help
 ks template build -b 1000
 ```
 
-When packaged system-wide (e.g. via `pipx` or AUR / `packaging/aur/PKGBUILD`), `ks` / `knapset` automatically stores mutable databases, caches, configs, and installed plugins in `$XDG_DATA_HOME/knapset` and `$XDG_CONFIG_HOME/knapset` (`KNAPSET_HOME` overrides both).
+When installed system-wide (AUR / `uv tool install`), `ks` / `knapset` automatically stores mutable databases, caches, configs, and installed plugins in `$XDG_DATA_HOME/knapset` and `$XDG_CONFIG_HOME/knapset` (`KNAPSET_HOME` overrides both).
+
+From a local source checkout:
+
+```bash
+git clone https://github.com/knapset-dev/knapset.git
+cd knapset
+python3 -m unittest discover -s tests -v
+```
 
 ### Built-in domains & installing extensions
 

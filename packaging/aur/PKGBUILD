@@ -2,7 +2,7 @@
 pkgname=knapset
 pkgver=1.0.0
 pkgrel=1
-pkgdesc="Zero-dependency Unix CLI for market analysis and combinatorial set optimization (ks)"
+pkgdesc="Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets"
 arch=('any')
 url="https://github.com/knapset-dev/knapset"
 license=('MIT')
@@ -24,10 +24,17 @@ package() {
     "${pkgdir}/usr/lib/${pkgname}/"
 
   find "${pkgdir}/usr/lib/${pkgname}" -type d -name '__pycache__' -exec rm -rf {} +
+  python3 -m compileall -q "${pkgdir}/usr/lib/${pkgname}"
 
   cat <<'EOF' > "${pkgdir}/usr/bin/knapset"
-#!/bin/sh
-exec python3 /usr/lib/knapset/main.py "$@"
+#!/usr/bin/env python3
+import sys
+
+sys.path.insert(0, "/usr/lib/knapset")
+from main import main
+
+if __name__ == "__main__":
+    main()
 EOF
   chmod 755 "${pkgdir}/usr/bin/knapset"
   ln -s knapset "${pkgdir}/usr/bin/ks"
