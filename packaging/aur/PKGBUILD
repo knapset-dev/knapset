@@ -1,26 +1,23 @@
 # Maintainer: knapset-dev <knapset-dev@users.noreply.github.com>
 pkgname=knapset
-pkgver=1.0.2
+pkgver=2.0.0
 pkgrel=1
-pkgdesc="Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets"
+pkgdesc="Zero-dependency database preference, formula, and constraint optimizer (SQLite, CSV, JSON, TUI, Web, MCP)"
 arch=('any')
 url="https://github.com/knapset-dev/knapset"
 license=('MIT')
 depends=('python>=3.10')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knapset-dev/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('e2e42b09e0f91fc89d11c0934145b43e24b72d77cdb9f6730abeda7bfb71dc5e')
+sha256sums=('SKIP')
 
 package() {
   cd "${srcdir}/${pkgname}-${pkgver}"
 
   install -d "${pkgdir}/usr/lib/${pkgname}" "${pkgdir}/usr/bin"
   cp -a \
-    app_paths.py main.py currency.py analyzer_core.py audit_ledger.py \
-    ai_inspector.py domain_layout.py domain_weights.py set_synthesizer.py \
-    extension_registry.py market_client.py market_store.py mcp_server.py \
-    provider_template.py scam_utils.py web_server.py watchdog.py \
-    ai_providers build_composer component_analyser configs docs \
-    extensions info_providers marketplace scam_analyser \
+    app_paths.py enricher.py formula_engine.py main.py mcp_server.py \
+    preset_loader.py solver_engine.py theme_config.py tui.py v2_cli.py \
+    web_server.py configs docs marketplace sources \
     "${pkgdir}/usr/lib/${pkgname}/"
 
   find "${pkgdir}/usr/lib/${pkgname}" -type d -name '__pycache__' -exec rm -rf {} +

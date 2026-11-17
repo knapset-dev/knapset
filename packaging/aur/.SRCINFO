@@ -1,12 +1,12 @@
 pkgbase = knapset
-	pkgdesc = Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets
-	pkgver = 1.0.2
+	pkgdesc = Zero-dependency database preference, formula, and constraint optimizer (SQLite, CSV, JSON, TUI, Web, MCP)
+	pkgver = 2.0.0
 	pkgrel = 1
 	url = https://github.com/knapset-dev/knapset
 	arch = any
 	license = MIT
 	depends = python>=3.10
-	source = knapset-1.0.2.tar.gz::https://github.com/knapset-dev/knapset/archive/refs/tags/v1.0.2.tar.gz
-	sha256sums = e2e42b09e0f91fc89d11c0934145b43e24b72d77cdb9f6730abeda7bfb71dc5e
+	source = knapset-2.0.0.tar.gz::https://github.com/knapset-dev/knapset/archive/refs/tags/v2.0.0.tar.gz
+	sha256sums = SKIP
 
 pkgname = knapset

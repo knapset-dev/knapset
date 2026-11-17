@@ -43,6 +43,8 @@ jobs:
           python main.py --help
           python main.py --version
           python main.py tui --help
+          python main.py reg --help
+          python main.py reg theme show
           python main.py serve --help
           python main.py mcp --list-tools
           python main.py preset list --json
@@ -51,5 +53,6 @@ jobs:
           python -m venv /tmp/knapset-wheel-venv
           /tmp/knapset-wheel-venv/bin/pip install --quiet --no-deps dist/*.whl
           /tmp/knapset-wheel-venv/bin/ks --version
+          /tmp/knapset-wheel-venv/bin/ks reg theme show
           /tmp/knapset-wheel-venv/bin/ks mcp --list-tools
           rm -rf /tmp/knapset-wheel-venv dist build *.egg-info

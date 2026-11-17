@@ -29,8 +29,8 @@ Existing DBs (.db / .csv / .json) ──► Reference DB Enricher (--ref) ──
   - `ks rank`: Single-table Top-K ranking with `--explain` normalized breakdown.
   - `ks basket`: 0/1 or bounded multi-item knapsack under multiple resource caps.
   - `ks solve`: Multi-slot set composition across tables or separate files.
-- **Interactive `curses` TUI (`ks tui`)**: Pick main & reference DBs, switch presets/profiles, nudge weights live with `+` and `-`, type custom formulas/rules/limits inline with discovered column hints, see top results update live, and save customized `.json` presets.
-- **Declarative Presets & Optional Plugins (`preset_loader.py`, `ks run`, `ks preset`)**: Save/share `.json` (or `.toml` on Python 3.11+) presets, override any preference/limit from CLI, or install community presets via `knapset-registry`.
+- **Interactive `curses` TUI (`ks tui`)**: Pick main & reference DBs, switch presets/profiles, switch live color themes via `/theme` in the command palette, nudge weights live with `←`/`→` or `-`/`+` (keyboard or mouse hold), type custom formulas/rules/limits inline with discovered column hints, see top results update live, and save customized `.json` presets.
+- **Registry, Presets & TUI Themes (`ks reg`, `ks preset`, `configs/theme.json`)**: Save/share declarative `.json` (or `.toml` on Python 3.11+) presets, configure or switch TUI color themes in `configs/theme.json` (supporting named ANSI, 256-color indices, and `#RRGGBB` hex colors, with built-in `agy-dark` and `soft-dark-pink`), or search/install/verify community presets and themes via `knapset-registry` (`ks reg`).
 - **Web Studio (`ks serve`) & MCP Server (`ks mcp`)**: Built-in local browser dashboard + JSON API (`http.server`) and zero-dependency JSON-RPC 2.0 MCP server over `stdio`.
 
 ---
@@ -74,6 +74,12 @@ ks tui pc.db
 # 7. Scaffold & execute reusable JSON presets
 ks init pc.db -o my_pc.json
 ks run my_pc.json --prefer "price:-0.6" --limit "sum(price) <= 800"
+
+# 8. Browse, install & activate TUI themes or presets from knapset-registry
+ks reg search --type theme
+ks reg install theme:nord --use
+ks reg theme list
+ks reg theme use soft-dark-pink
 ```
 
 ---
