@@ -8,7 +8,7 @@ url="https://github.com/knapset-dev/knapset"
 license=('MIT')
 depends=('python>=3.10')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knapset-dev/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('e2e42b09e0f91fc89d11c0934145b43e24b72d77cdb9f6730abeda7bfb71dc5e')
 
 package() {
   cd "${srcdir}/${pkgname}-${pkgver}"
