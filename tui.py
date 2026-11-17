@@ -678,13 +678,13 @@ def _format_weight_bar(weight: float, width: int = 10) -> str:
     return "█" * full + ("▌" * half) + "░" * (width - full - half)
 
 
-def _compute_accelerated_step(streak: int, base_step: float = 0.05) -> float:
-    """Returns `0.05` (5%) initially, accelerating gradually to `0.10` and `0.15` only during sustained key holds."""
-    if streak >= 16:
-        return round(base_step * 3, 2)
-    if streak >= 8:
-        return round(base_step * 2, 2)
-    return base_step
+def _compute_hold_interval(hold_steps: int) -> float:
+    """Returns repeat interval (seconds) while holding a key: starts slow and caps at a low max speed."""
+    if hold_steps >= 7:
+        return 0.075
+    if hold_steps >= 3:
+        return 0.095
+    return 0.125
 
 
 @dataclass
@@ -1455,22 +1455,29 @@ def run_curses_tui(state: TuiSessionState) -> None:
         last_dims: Tuple[int, int] = (0, 0)
         last_step_idx = -1
         last_step_sign = 0
-        last_step_at = 0.0
-        step_streak = 0
+        last_event_at = 0.0
+        last_apply_at = 0.0
+        fast_events = 0
+        hold_steps = 0
 
         def _nudge_weight(idx: int, sign: int, allow_accel: bool = True) -> None:
-            nonlocal last_step_idx, last_step_sign, last_step_at, step_streak
+            nonlocal last_step_idx, last_step_sign, last_event_at, last_apply_at, fast_events, hold_steps
             now = time.monotonic()
-            # Only accelerate on tight key auto-repeat bursts (<=85ms), never on manual fast clicks
-            if allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_step_at) <= 0.085:
-                step_streak += 1
-            else:
-                step_streak = 0
+            same_repeat = allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_event_at) <= 0.085
             last_step_idx = idx
             last_step_sign = sign
-            last_step_at = now
-            mag_step = _compute_accelerated_step(step_streak, base_step=0.05) if allow_accel else 0.05
-            state.adjust_weight(idx, sign * mag_step, auto_solve=False)
+            last_event_at = now
+            if same_repeat:
+                fast_events += 1
+                if fast_events >= 2 and (now - last_apply_at) < _compute_hold_interval(hold_steps):
+                    return
+                if fast_events >= 2:
+                    hold_steps += 1
+            else:
+                fast_events = 0
+                hold_steps = 0
+            last_apply_at = now
+            state.adjust_weight(idx, sign * 0.05, auto_solve=False)
             _schedule_solve()
 
         def _schedule_solve() -> None:

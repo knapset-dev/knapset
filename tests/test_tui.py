@@ -18,7 +18,7 @@ from preset_loader import discover_presets, load_preset
 from tui import (
     TuiSessionState,
     _build_workspace_items,
-    _compute_accelerated_step,
+    _compute_hold_interval,
     _format_weight_bar,
     _render_result_lines,
     _wrap_suggestion_lines,
@@ -100,11 +100,10 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertEqual(_format_weight_bar(0.5), "█████░░░░░")
             self.assertEqual(_format_weight_bar(0.6), "██████░░░░")
             self.assertEqual(_format_weight_bar(0.15), "█▌░░░░░░░░")
-            self.assertEqual(_compute_accelerated_step(0), 0.05)
-            self.assertEqual(_compute_accelerated_step(7), 0.05)
-            self.assertEqual(_compute_accelerated_step(8), 0.10)
-            self.assertEqual(_compute_accelerated_step(15), 0.10)
-            self.assertEqual(_compute_accelerated_step(16), 0.15)
+            self.assertEqual(_compute_hold_interval(0), 0.125)
+            self.assertEqual(_compute_hold_interval(3), 0.095)
+            self.assertEqual(_compute_hold_interval(7), 0.075)
+            self.assertEqual(_compute_hold_interval(20), 0.075)
 
             # Clamping within [0.0, 1.0] & direction toggle
             state.adjust_weight(0, 5.0)
