@@ -15,10 +15,12 @@ from __future__ import annotations
 import io
 import json
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -529,6 +531,70 @@ class TestMarketplaceClient(unittest.TestCase):
         dest = self.root_path / "scam_analyser/modules/remote_mod"
         self.assertTrue((dest / "__init__.py").is_file())
         self.assertTrue((dest / "rules.json").is_file())
+
+    def test_registry_cache_ttl_offline_fallback_and_refresh(self):
+        class _FakeResp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        calls = []
+        v1 = {"version": "1.0.0", "modules": [{"name": "m1", "subsystem": "scam_analyser", "domain": "general", "version": "1.0.0", "author": "T", "source_type": "single_file", "download_url": "m1.py", "sha256": "a" * 64}], "bundles": []}
+        v2 = {"version": "1.0.0", "modules": [{"name": "m2", "subsystem": "scam_analyser", "domain": "general", "version": "1.0.0", "author": "T", "source_type": "single_file", "download_url": "m2.py", "sha256": "b" * 64}], "bundles": []}
+        payload = {"index": v1}
+
+        def fake_urlopen(req, timeout=5):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            calls.append(url)
+            if payload["index"] is None:
+                raise OSError("offline")
+            return _FakeResp(json.dumps(payload["index"]).encode("utf-8"))
+
+        rc = MarketplaceClient(
+            registry_url_or_path="https://example.test/reg/registry.json",
+            root_dir=self.root_path,
+        )
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            # 1. Initial search fetches v1 and writes cache
+            res1 = rc.search()
+            self.assertEqual([m["name"] for m in res1["modules"]], ["m1"])
+            self.assertEqual(len(calls), 1)
+
+            # 2. Fresh cache returns v1 without hitting network
+            payload["index"] = v2
+            res2 = rc.search()
+            self.assertEqual([m["name"] for m in res2["modules"]], ["m1"])
+            self.assertEqual(len(calls), 1)
+
+            # 3. --refresh / force_refresh=True bypasses fresh cache
+            res3 = rc.search(force_refresh=True)
+            self.assertEqual([m["name"] for m in res3["modules"]], ["m2"])
+            self.assertEqual(len(calls), 2)
+
+            # 4. Expired cache (> TTL) triggers refresh; offline falls back to stale cache
+            old_ts = time.time() - 7200
+            os.utime(rc.cache_file, (old_ts, old_ts))
+            payload["index"] = None
+            res4 = rc.search()
+            self.assertEqual([m["name"] for m in res4["modules"]], ["m2"])
+            self.assertEqual(len(calls), 3)
+
+            # 5. Top-level install() attempts fresh index fetch (even when cache is fresh)
+            payload["index"] = v1
+            now_ts = time.time()
+            os.utime(rc.cache_file, (now_ts, now_ts))
+            ok, msg = rc.install("m2")
+            self.assertFalse(ok)
+            self.assertIn("not found", msg)
+            self.assertEqual(len(calls), 4)
 
     def test_shared_canonical_data_domain_resolution(self):
         from market_client import normalize_data_domain

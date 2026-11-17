@@ -25,9 +25,14 @@ def format_trust_badge(level: str) -> str:
     return "[COMMUNITY]"
 
 
-def _handle_install(client: MarketplaceClient, target: str, force: bool = False) -> None:
+def _handle_install(
+    client: MarketplaceClient,
+    target: str,
+    force: bool = False,
+    force_refresh: Optional[bool] = None,
+) -> None:
     print(f"Installing '{target}'...")
-    ok, msg = client.install(target, force=force)
+    ok, msg = client.install(target, force=force, force_refresh=force_refresh)
     if not ok:
         print(f"[FAIL] Failed to install '{target}':\n{msg}", file=sys.stderr)
         sys.exit(1)
@@ -78,12 +83,14 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
     search_p.add_argument("-s", "--subsystem", help="Filter by subsystem")
     search_p.add_argument("-t", "--tag", help="Filter by tag")
     search_p.add_argument("--registry", help="Custom registry index URL or directory path")
+    search_p.add_argument("--refresh", action="store_true", help="Bypass registry cache and fetch latest index")
     search_p.add_argument("--json", action="store_true", help="Output results in JSON format")
 
     # Info
     info_p = subparsers.add_parser("info", help="Show detailed info about a module or bundle")
     info_p.add_argument("name", help="Name of module or bundle (e.g. sample_provider, bundle:pc-starter)")
     info_p.add_argument("--registry", help="Custom registry index URL or directory path")
+    info_p.add_argument("--refresh", action="store_true", help="Bypass registry cache and fetch latest index")
     info_p.add_argument("--json", action="store_true", help="Output in JSON format")
 
     # Install
@@ -93,12 +100,14 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
     )
     inst_p.add_argument("-f", "--force", action="store_true", help="Force overwrite if already installed")
     inst_p.add_argument("--registry", help="Custom registry index URL or directory path")
+    inst_p.add_argument("--refresh", action="store_true", help="Bypass registry cache and fetch latest index")
 
     # Install bundle (convenience subcommand)
     inst_b_p = subparsers.add_parser("install-bundle", help="Install a curated bundle of modules from the registry")
     inst_b_p.add_argument("target", help="Bundle name (e.g. pc-starter, photo-kit)")
     inst_b_p.add_argument("-f", "--force", action="store_true", help="Force overwrite if already installed")
     inst_b_p.add_argument("--registry", help="Custom registry index URL or directory path")
+    inst_b_p.add_argument("--refresh", action="store_true", help="Bypass registry cache and fetch latest index")
 
     # Update
     up_p = subparsers.add_parser("update", help="Update installed modules to the latest version")
@@ -150,6 +159,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
             domain=parsed.domain,
             subsystem=parsed.subsystem,
             tag=parsed.tag,
+            force_refresh=parsed.refresh,
         )
         if parsed.json:
             print(json.dumps(res, indent=2, ensure_ascii=False))
@@ -228,7 +238,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
         print(f"\nInstall with: {get_cli_prog()} module install <name>\n")
 
     elif parsed.subcommand == "info":
-        info = client.info(parsed.name)
+        info = client.info(parsed.name, force_refresh=parsed.refresh)
         if not info:
             print(f"Error: Nothing found for '{parsed.name}' in registry.", file=sys.stderr)
             sys.exit(1)
@@ -267,11 +277,11 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
         print()
 
     elif parsed.subcommand == "install":
-        _handle_install(client, parsed.target, force=parsed.force)
+        _handle_install(client, parsed.target, force=parsed.force, force_refresh=True if parsed.refresh else None)
 
     elif parsed.subcommand == "install-bundle":
         bundle_target = parsed.target if parsed.target.startswith("bundle:") else f"bundle:{parsed.target}"
-        _handle_install(client, bundle_target, force=parsed.force)
+        _handle_install(client, bundle_target, force=parsed.force, force_refresh=True if parsed.refresh else None)
 
     elif parsed.subcommand == "update":
         results = client.update(name=parsed.name, update_all=parsed.all)

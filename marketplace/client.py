@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+import time
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 import urllib.error
 import urllib.parse
@@ -37,6 +38,7 @@ from marketplace.security import SecurityScanner
 logger = logging.getLogger(__name__)
 
 APP_VERSION = "1.0.1"
+DEFAULT_REGISTRY_CACHE_TTL_SEC = 3600.0
 OFFICIAL_REMOTE_REGISTRY_URL = (
     "https://raw.githubusercontent.com/knapset-dev/knapset-registry/main/registry.json"
 )
@@ -179,8 +181,29 @@ class MarketplaceClient:
         data = {k: v.to_dict() for k, v in records.items()}
         _atomic_write_text(self.installed_file, json.dumps(data, indent=2, ensure_ascii=False))
 
+    def _registry_cache_ttl_sec(self) -> float:
+        raw = os.environ.get("KNAPSET_REGISTRY_CACHE_TTL", "").strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return DEFAULT_REGISTRY_CACHE_TTL_SEC
+
+    def _is_cache_fresh(self) -> bool:
+        if not self.cache_file.is_file():
+            return False
+        ttl = self._registry_cache_ttl_sec()
+        if ttl <= 0:
+            return False
+        try:
+            age = time.time() - self.cache_file.stat().st_mtime
+            return age < ttl
+        except OSError:
+            return False
+
     def fetch_registry_index(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """Fetches the registry index from URL or local directory/file with caching."""
+        """Fetches the registry index from URL or local directory/file with TTL caching."""
         # 1. Local file or directory check (including file:// URLs)
         source_path = self._local_registry_path()
         if source_path is not None:
@@ -199,7 +222,7 @@ class MarketplaceClient:
             if not index_url.endswith(".json"):
                 index_url = index_url.rstrip("/") + "/registry.json"
 
-            if not force_refresh and self.cache_file.exists():
+            if not force_refresh and self._is_cache_fresh():
                 try:
                     return json.loads(self.cache_file.read_text(encoding="utf-8"))
                 except Exception:
@@ -263,9 +286,10 @@ class MarketplaceClient:
         domain: Optional[str] = None,
         subsystem: Optional[str] = None,
         tag: Optional[str] = None,
+        force_refresh: bool = False,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Searches available modules and bundles matching criteria."""
-        index = self.fetch_registry_index()
+        index = self.fetch_registry_index(force_refresh=force_refresh)
         raw_modules = index.get("modules", [])
         raw_bundles = index.get("bundles", [])
 
@@ -311,13 +335,13 @@ class MarketplaceClient:
 
         return {"modules": matched_modules, "bundles": matched_bundles}
 
-    def info(self, name: str) -> Optional[Dict[str, Any]]:
+    def info(self, name: str, force_refresh: bool = False) -> Optional[Dict[str, Any]]:
         """Returns detailed manifest and installation info for a module or bundle."""
         clean_name = name.strip().lower()
         if clean_name.startswith("bundle:"):
             clean_name = clean_name[len("bundle:") :]
 
-        index = self.fetch_registry_index()
+        index = self.fetch_registry_index(force_refresh=force_refresh)
         installed_map = self._read_installed_records()
 
         # Check in modules
@@ -458,9 +482,11 @@ class MarketplaceClient:
         force: bool = False,
         visited_bundles: Optional[Set[str]] = None,
         visited_modules: Optional[Set[str]] = None,
+        force_refresh: Optional[bool] = None,
     ) -> Tuple[bool, str]:
         """Installs a module, bundle, domain, or tag."""
         target_norm = target.strip().lower()
+        should_refresh = (visited_bundles is None and visited_modules is None) if force_refresh is None else force_refresh
 
         # 1. Bundle installation
         if target_norm.startswith("bundle:"):
@@ -471,7 +497,7 @@ class MarketplaceClient:
                 return False, f"Cyclic bundle dependency detected: '{bundle_name}' already visited."
             visited_bundles.add(bundle_name)
 
-            index = self.fetch_registry_index()
+            index = self.fetch_registry_index(force_refresh=should_refresh)
             bundle = next(
                 (b for b in index.get("bundles", []) if b.get("name", "").lower() == bundle_name), None
             )
@@ -485,6 +511,7 @@ class MarketplaceClient:
                     force=force,
                     visited_bundles=visited_bundles,
                     visited_modules=visited_modules,
+                    force_refresh=False,
                 )
                 results.append(f"• {mod_name}: {'OK' if ok else 'FAIL'} ({msg})")
             return True, f"Installed bundle '{bundle_name}':\n" + "\n".join(results)
@@ -492,7 +519,7 @@ class MarketplaceClient:
         # 2. Domain installation
         if target_norm.startswith("domain:"):
             dom_name = target_norm[len("domain:") :]
-            index = self.fetch_registry_index()
+            index = self.fetch_registry_index(force_refresh=should_refresh)
             matched = [
                 m.get("name")
                 for m in index.get("modules", [])
@@ -507,6 +534,7 @@ class MarketplaceClient:
                     force=force,
                     visited_bundles=visited_bundles,
                     visited_modules=visited_modules,
+                    force_refresh=False,
                 )
                 results.append(f"• {mod_name}: {'OK' if ok else 'FAIL'} ({msg})")
             return True, f"Installed domain '{dom_name}' ({len(matched)} modules):\n" + "\n".join(results)
@@ -514,7 +542,7 @@ class MarketplaceClient:
         # 3. Tag installation
         if target_norm.startswith("tag:"):
             tag_name = target_norm[len("tag:") :]
-            index = self.fetch_registry_index()
+            index = self.fetch_registry_index(force_refresh=should_refresh)
             matched = [
                 m.get("name")
                 for m in index.get("modules", [])
@@ -529,6 +557,7 @@ class MarketplaceClient:
                     force=force,
                     visited_bundles=visited_bundles,
                     visited_modules=visited_modules,
+                    force_refresh=False,
                 )
                 results.append(f"• {mod_name}: {'OK' if ok else 'FAIL'} ({msg})")
             return True, f"Installed tag '{tag_name}' ({len(matched)} modules):\n" + "\n".join(results)
@@ -542,7 +571,7 @@ class MarketplaceClient:
             target_norm = target_norm[len("extension:") :].strip()
 
         # 4. Single Module installation (with Zero-Prefix Smart Auto-Resolution)
-        index = self.fetch_registry_index()
+        index = self.fetch_registry_index(force_refresh=should_refresh)
         m_data = next(
             (m for m in index.get("modules", []) if m.get("name", "").lower() == target_norm), None
         )
@@ -557,6 +586,7 @@ class MarketplaceClient:
                     force=force,
                     visited_bundles=visited_bundles,
                     visited_modules=visited_modules,
+                    force_refresh=False,
                 )
 
             # Check domain groups
@@ -571,6 +601,7 @@ class MarketplaceClient:
                     force=force,
                     visited_bundles=visited_bundles,
                     visited_modules=visited_modules,
+                    force_refresh=False,
                 )
 
             return False, f"Item '{target_norm}' not found in registry (checked modules, bundles, and domains)."

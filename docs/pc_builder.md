@@ -52,55 +52,55 @@ Execute the PC builder from the root CLI using the `pc` domain prefix (when inst
 ### 3.1. Standard Budget Synthesis
 Synthesize the 5 best balanced builds for 850 USDT:
 ```bash
-python3 main.py pc build -b 850
+ks pc build -b 850
 ```
 
 Or in Ukrainian Hryvnia (UAH):
 ```bash
-python3 main.py --currency UAH pc build -b 35000
+ks --currency UAH pc build -b 35000
 ```
 
 ### 3.2. Pure Cost Efficiency (Value Mode)
 Optimize for maximum FPS per dollar at a budget of 600 USDT:
 ```bash
-python3 main.py pc build -b 600 -M value
+ks pc build -b 600 -M value
 ```
 
 ### 3.3. Locking Owned Components
 If you already own an RTX 3080 and have a 400 USDT budget to build the rest of the PC:
 ```bash
-python3 main.py pc build -b 400 --gpu "owned:RTX 3080"
+ks pc build -b 400 --gpu "owned:RTX 3080"
 ```
 *(Also supports `--cpu "owned:..."`, `--mobo "owned:..."`, `--ram "owned:..."`, `--psu "owned:..."`)*
 
 ### 3.4. Socket & Hardware Constraints
 Lock the platform to AMD Socket AM5 with at least 16 CPU threads:
 ```bash
-python3 main.py pc build -b 1100 --socket AM5 -t 16
+ks pc build -b 1100 --socket AM5 -t 16
 ```
 
 ### 3.5. Multi-Marketplace Synthesis
 Include retail store catalogues (Telemart) and C2C classifieds (OLX) simultaneously:
 ```bash
-python3 main.py pc build -b 750 --provider all
+ks pc build -b 750 --provider all
 ```
 
 ### 3.6. AI Pre-Screening & Holistic System Audit
 Filter suspicious listings using an LLM inspector before combinatorial synthesis:
 ```bash
-python3 main.py pc build -b 1000 --ai-prescreen --ai-provider gemini
+ks pc build -b 1000 --ai-prescreen --ai-provider gemini
 ```
 
 ### 3.7. Interactive Human Validation Loop
 Surface top GPU finalists and CPU+Platform proposals for interactive approval before assembling builds:
 ```bash
-python3 main.py pc build -b 850 --human-review
+ks pc build -b 850 --human-review
 ```
 
 ### 3.8. Exporting to JSON
 Export generated builds into an automation-ready JSON report:
 ```bash
-python3 main.py pc build -b 850 --export build_result.json
+ks pc build -b 850 --export build_result.json
 ```
 
 ---
@@ -182,5 +182,5 @@ knapset/
 │   ├── modes.py                  # Multi-objective Pareto scoring profiles & weights
 │   └── cli.py                    # PC domain CLI dispatcher ('pc build', 'pc prebuilt', etc.)
 ├── data/                         # Local market caches (*_market_cache.json + knapset_market.db)
-└── main.py                       # Unified CLI framework ('python3 main.py pc build')
+└── main.py                       # Unified CLI framework ('ks pc build' / 'python3 main.py pc build')
 ```
