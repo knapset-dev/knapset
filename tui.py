@@ -711,7 +711,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
                 _WorkspaceItem(
                     kind="weight",
                     index=idx,
-                    label=f" {expr[:17]:<17} [{bar}] {mag:.2f} {pct:>2}% {arrow}",
+                    label=f" {expr[:14]:<14} [-][{bar}][+] {mag:.2f} {pct:>2}% {arrow}",
                     tone=tone,
                 )
             )
@@ -1404,7 +1404,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
         curses.curs_set(0)
         stdscr.keypad(True)
         try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
+            wheel_dn = getattr(curses, "BUTTON5_PRESSED", 0)
+            curses.mousemask(curses.BUTTON1_PRESSED | wheel_up | wheel_dn)
+            if hasattr(curses, "mouseinterval"):
+                curses.mouseinterval(0)
         except Exception:
             pass
         if curses.has_colors():
@@ -1433,8 +1437,10 @@ def run_curses_tui(state: TuiSessionState) -> None:
         DEBOUNCE_SEC = 0.45
         result_queue: queue.SimpleQueue = queue.SimpleQueue()
         needs_redraw = True
+        force_clear = True
         cached_res_key: Any = None
         cached_res_lines: List[str] = []
+        last_dims: Tuple[int, int] = (0, 0)
 
         def _schedule_solve() -> None:
             nonlocal solve_pending, solve_due_at, solve_gen, needs_redraw
@@ -1501,9 +1507,14 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
             if needs_redraw:
                 needs_redraw = False
-                stdscr.erase()
                 h, w = stdscr.getmaxyx()
-                left_w = max(38, min(62, int(w * 0.46)))
+                if (h, w) != last_dims:
+                    force_clear = True
+                    last_dims = (h, w)
+                if force_clear:
+                    stdscr.erase()
+                    force_clear = False
+                left_w = max(54 if w >= 88 else 38, min(64, int(w * 0.48)))
                 right_x = left_w + 1
                 right_w = max(24, w - right_x)
 
@@ -1516,7 +1527,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     sync_tag = ""
                 hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}{sync_tag}"
                 hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
-                stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
+                stdscr.addnstr(0, 0, hdr_left.ljust(max(0, w - 1)), w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
                 if w > len(hdr_left) + len(hdr_right) + 2:
                     stdscr.addnstr(0, w - len(hdr_right) - 1, hdr_right, len(hdr_right), curses.A_DIM)
 
@@ -1537,7 +1548,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 for r in range(inner_h):
                     idx = left_scroll + r
                     if idx >= len(ws_items):
-                        break
+                        stdscr.addnstr(pane_y + 1 + r, 2, " " * max(0, left_w - 3), max(0, left_w - 3))
+                        continue
                     it = ws_items[idx]
                     selected = (not focus_results) and (idx == left_cursor)
                     marker = "▸" if selected else " "
@@ -1559,13 +1571,14 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 for r in range(inner_h):
                     r_idx = right_scroll + r
                     if r_idx >= len(cached_res_lines):
-                        break
-                    txt = cached_res_lines[r_idx]
-                    attr = curses.color_pair(C_GREEN) if txt.startswith("╭─") else (curses.A_DIM if txt.startswith("╰") else curses.A_NORMAL)
+                        stdscr.addnstr(pane_y + 1 + r, right_x + 2, " " * max(0, right_w - 3), max(0, right_w - 3))
+                        continue
+                    txt = cached_res_lines[r_idx].ljust(max(0, right_w - 3))[: max(0, right_w - 3)]
+                    attr = curses.color_pair(C_GREEN) if cached_res_lines[r_idx].startswith("╭─") else (curses.A_DIM if cached_res_lines[r_idx].startswith("╰") else curses.A_NORMAL)
                     stdscr.addnstr(pane_y + 1 + r, right_x + 2, txt, right_w - 3, attr)
 
-                stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
-                footer = " ↑↓:Nav  ←/→:Weight  Enter:Pick/Hop  d:Del  s:Save Pref  h:Hop Pref  o:DB  p:Preset  /:Cmds  q:Quit "
+                stdscr.addnstr(h - 2, 1, state.status_message.ljust(max(0, w - 2))[: max(0, w - 2)], w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
+                footer = " ↑↓:Nav  ←/→ or click [-]/[+]:Weight  t:Dir  Enter:Edit/Hop  d:Del  s:Save  /:Cmds  q:Quit "
                 stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
                 stdscr.refresh()
 
@@ -1574,6 +1587,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
             if ch == curses.ERR:
                 continue
             needs_redraw = True
+            if ch == curses.KEY_RESIZE:
+                force_clear = True
+                continue
             if ch in (ord("q"), ord("Q")):
                 break
             if ch == 9:
@@ -1582,14 +1598,17 @@ def run_curses_tui(state: TuiSessionState) -> None:
             if ch in (ord("/"), ord("?")):
                 _flush_pending_solve()
                 _action_command_palette(stdscr)
+                force_clear = True
                 continue
             if ch in (ord("o"), ord("O")):
                 _flush_pending_solve()
                 _action_open_db(stdscr)
+                force_clear = True
                 continue
             if ch in (ord("p"), ord("P")):
                 _flush_pending_solve()
                 _action_pick_preset(stdscr)
+                force_clear = True
                 continue
             if ch in (ord("h"), ord("H")):
                 solve_gen += 1
@@ -1610,26 +1629,68 @@ def run_curses_tui(state: TuiSessionState) -> None:
             if ch in (ord("s"), ord("S")):
                 _flush_pending_solve()
                 _action_save_preference(stdscr)
+                force_clear = True
                 continue
 
             if ch == curses.KEY_MOUSE:
                 try:
                     _, mx, my, _, bstate = curses.getmouse()
+                    wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
+                    wheel_dn = getattr(curses, "BUTTON5_PRESSED", 0)
+                    if wheel_up and (bstate & wheel_up):
+                        if focus_results or mx >= right_x:
+                            right_scroll = max(0, right_scroll - 2)
+                        else:
+                            nxt = max(1, left_cursor - 1)
+                            while nxt > 1 and ws_items[nxt].kind == "header":
+                                nxt -= 1
+                            if ws_items[nxt].kind != "header":
+                                left_cursor = nxt
+                        continue
+                    if wheel_dn and (bstate & wheel_dn):
+                        if focus_results or mx >= right_x:
+                            right_scroll = min(max_r_scroll, right_scroll + 2)
+                        else:
+                            nxt = min(len(ws_items) - 1, left_cursor + 1)
+                            while nxt < len(ws_items) - 1 and ws_items[nxt].kind == "header":
+                                nxt += 1
+                            if ws_items[nxt].kind != "header":
+                                left_cursor = nxt
+                        continue
+
                     if pane_y < my < pane_y + pane_h - 1 and 1 <= mx < left_w - 1:
                         focus_results = False
                         clicked_idx = left_scroll + (my - pane_y - 1)
                         if 0 <= clicked_idx < len(ws_items) and ws_items[clicked_idx].kind != "header":
                             left_cursor = clicked_idx
                             it = ws_items[left_cursor]
-                            if it.kind == "weight" and mx >= left_w - 14:
-                                state.adjust_weight(it.index, -0.1 if mx < left_w - 7 else 0.1, auto_solve=False)
-                                _schedule_solve()
-                            elif bstate & (curses.BUTTON1_DOUBLE_CLICKED | curses.BUTTON1_CLICKED) and it.kind in ("action", "profile", "slot", "ref"):
+                            if it.kind == "weight":
+                                if 17 <= mx <= 20:
+                                    state.adjust_weight(it.index, -0.1, auto_solve=False)
+                                    _schedule_solve()
+                                elif 21 <= mx <= 29:
+                                    # Proportional click directly along [███████] (cols 22..28)
+                                    frac = max(0.0, min(1.0, (mx - 22) / 6.0))
+                                    snapped = round(round(frac * 20) / 20.0, 2)
+                                    w_expr, _ = state.weights[it.index]
+                                    state.weights[it.index] = (w_expr, snapped)
+                                    state.dirty = True
+                                    state.status_message = f"{w_expr}: {snapped:.2f}"
+                                    _schedule_solve()
+                                elif 30 <= mx <= 33:
+                                    state.adjust_weight(it.index, 0.1, auto_solve=False)
+                                    _schedule_solve()
+                                elif mx >= 43:
+                                    state.toggle_weight_direction(it.index, auto_solve=False)
+                                    _schedule_solve()
+                            elif it.kind in ("action", "profile", "slot", "ref"):
                                 ch = 10
                     elif pane_y < my < pane_y + pane_h - 1 and mx >= right_x:
                         focus_results = True
                 except Exception:
                     pass
+                if ch != 10:
+                    continue
 
             if focus_results:
                 if ch == curses.KEY_UP:
@@ -1713,6 +1774,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     _action_add_constraint(stdscr)
                 else:
                     _action_add_weight(stdscr)
+                force_clear = True
             elif ch in (10, 13, curses.KEY_ENTER):
                 solve_gen += 1
                 solve_pending = False
@@ -1720,24 +1782,33 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 cur = ws_items[left_cursor]
                 if cur.action_id == "add_weight":
                     _action_add_weight(stdscr)
+                    force_clear = True
                 elif cur.action_id == "save_profile":
                     _action_save_preference(stdscr)
+                    force_clear = True
                 elif cur.action_id == "add_constraint":
                     _action_add_constraint(stdscr)
+                    force_clear = True
                 elif cur.action_id == "open_db":
                     _action_open_db(stdscr)
+                    force_clear = True
                 elif cur.action_id == "attach_ref":
                     _action_attach_ref(stdscr)
+                    force_clear = True
                 elif cur.action_id == "pick_preset":
                     _action_pick_preset(stdscr)
+                    force_clear = True
                 elif cur.kind == "profile":
                     state.switch_profile(cur.key)
                 elif cur.kind == "slot":
                     _action_repick_slot(stdscr, cur.key)
+                    force_clear = True
                 elif cur.kind == "ref":
                     _action_attach_ref(stdscr, forced_ref_key=cur.key)
+                    force_clear = True
                 elif cur.kind == "weight":
                     _action_edit_weight(stdscr, cur.index)
+                    force_clear = True
 
     curses.wrapper(_loop)
 
