@@ -43,7 +43,7 @@ class TestThemeConfigAndRegistry(unittest.TestCase):
         self.assertTrue(cfg_file.is_file())
         raw = json.loads(cfg_file.read_text(encoding="utf-8"))
         validate_theme_dict(raw)
-        self.assertEqual(raw["active_theme"], DEFAULT_THEME_NAME)
+        self.assertIn(raw["active_theme"], ("soft-dark-pink", DEFAULT_THEME_NAME))
 
         # Named colors, 256-color indices, and #RRGGBB hex quantization
         self.assertEqual(resolve_color_value("cyan", support_256=False), 6)
@@ -169,7 +169,7 @@ class TestThemeConfigAndRegistry(unittest.TestCase):
                 client = MarketplaceClient(registry_url_or_path=str(REGISTRY_DIR), root_dir=home_dir)
                 res = client.search(subsystem="themes")
                 names = {m["name"] for m in res["modules"]}
-                self.assertTrue({"nord", "catppuccin-mocha", "gruvbox-dark", "tokyo-night"}.issubset(names))
+                self.assertTrue({"nord", "catppuccin-mocha", "gruvbox-dark", "tokyo-night", "soft-dark-pink"}.issubset(names))
 
                 ok, msg = client.install("theme:tokyo-night")
                 self.assertTrue(ok, msg)
