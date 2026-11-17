@@ -26,7 +26,7 @@ from extension_registry import get_extension, list_domain_ids, list_extensions, 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {
     "name": "knapset-mcp",
-    "version": "1.0.0",
+    "version": "1.0.1",
 }
 
 MCP_TOOLS: List[Dict[str, Any]] = [

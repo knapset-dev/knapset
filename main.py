@@ -20,7 +20,7 @@ from typing import List, Optional
 
 from app_paths import get_cli_prog as _cli_prog
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 
 SUBCOMMANDS = {
     "domains": "List registered domain extensions (Layouts & Weights)",

@@ -1,6 +1,6 @@
 # Maintainer: knapset-dev <knapset-dev@users.noreply.github.com>
 pkgname=knapset
-pkgver=1.0.0
+pkgver=1.0.1
 pkgrel=1
 pkgdesc="Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets"
 arch=('any')
@@ -8,7 +8,7 @@ url="https://github.com/knapset-dev/knapset"
 license=('MIT')
 depends=('python>=3.10')
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/knapset-dev/${pkgname}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('7a32067d3e6c4a7fc0f88dbd9112910c456cfadb91754994b7a721989eb2f7ce')
+sha256sums=('SKIP')
 
 package() {
   cd "${srcdir}/${pkgname}-${pkgver}"

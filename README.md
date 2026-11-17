@@ -50,7 +50,7 @@ Install globally (`ks` and `knapset` commands in `$PATH`):
 
 ```bash
 # Arch Linux / CachyOS (1-line package install from GitHub Release):
-sudo pacman -U https://github.com/knapset-dev/knapset/releases/download/v1.0.0/knapset-1.0.0-1-any.pkg.tar.zst
+sudo pacman -U https://github.com/knapset-dev/knapset/releases/download/v1.0.1/knapset-1.0.1-1-any.pkg.tar.zst
 
 # Or build locally from packaging/aur/PKGBUILD:
 curl -fsSLO https://raw.githubusercontent.com/knapset-dev/knapset/main/packaging/aur/PKGBUILD && makepkg -si
