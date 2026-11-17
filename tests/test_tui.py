@@ -91,18 +91,35 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertLess(top["slots"]["cpu"]["score"] / top["slots"]["gpu"]["ref"]["score"], 1.0)
             self.assertLessEqual(top["metrics"]["sum(price) <= 950"], 950.0)
 
-            # Verify agy-style rounded solution cards, weight bars, workspace items, & file discovery
+            # Verify agy-style rounded solution cards, weight bars, clamping [0..1], pink < 1/N%, & file discovery
             state.explain = True
             rendered = _render_result_lines(state, 90)
             self.assertTrue(any("╭─ #1 │ Score" in line for line in rendered))
             self.assertEqual(len(_format_weight_bar(0.5, width=8)), 8)
             self.assertIn("█", _format_weight_bar(0.5, width=8))
-            self.assertIn("▓", _format_weight_bar(-0.5, width=8))
+
+            # Clamping within [0.0, 1.0] & direction toggle
+            state.adjust_weight(0, 5.0)
+            self.assertEqual(state.weights[0][1], 1.0)
+            state.adjust_weight(0, -5.0)
+            self.assertEqual(state.weights[0][1], 0.0)
+            state.adjust_weight(0, 0.2)
+            self.assertEqual(state.weights[0][1], 0.2)
+            prev_dir = state.weight_dirs.get(state.weights[0][0], "max")
+            state.toggle_weight_direction(0)
+            self.assertNotEqual(state.weight_dirs.get(state.weights[0][0]), prev_dir)
+            state.toggle_weight_direction(0)
 
             ws_items = _build_workspace_items(state)
             self.assertTrue(any(it.action_id == "add_weight" for it in ws_items))
             self.assertTrue(any(it.action_id == "add_constraint" for it in ws_items))
             self.assertTrue(any(it.kind == "rule" for it in ws_items))
+
+            # Pink starts where parameter weight share < 1/N% of total weight sum x
+            state._set_weights_from_pairs([("a", 0.7), ("b", 0.2), ("c", 0.1)])  # N=3 -> 33.3%: a=70% (pos), b=20% (min/pink), c=10% (min/pink)
+            w_items = [it for it in _build_workspace_items(state) if it.kind == "weight"]
+            self.assertEqual([it.tone for it in w_items], ["pos", "min", "min"])
+
             discovered_files = discover_local_data_files(root)
             self.assertIn(db_path.resolve(), discovered_files)
             self.assertIn(gpu_ref.resolve(), discovered_files)
@@ -114,6 +131,10 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertEqual(state.mode, "rank")
             state.cycle_mode()
             self.assertEqual(state.mode, "solve")
+
+            # Restore solve weights before exporting customized preset
+            state._set_weights_from_pairs([("cpu.score", 0.3), ("gpu.ref.score", 0.6), ("price", -0.2)])
+            state.re_solve()
 
             # Export customized TUI session back to preset JSON and reload it
             out_json = state.export_preset(root / "saved_rig.json", preset_name="saved_rig")

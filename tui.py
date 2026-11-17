@@ -117,6 +117,7 @@ class TuiSessionState:
     references: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     base_dir: Path = field(default_factory=Path.cwd)
     weights: List[Tuple[str, float]] = field(default_factory=list)
+    weight_dirs: Dict[str, str] = field(default_factory=dict)  # expr -> "max" | "min"
     formulas: List[str] = field(default_factory=list)
     where: List[str] = field(default_factory=list)
     limits: List[str] = field(default_factory=list)
@@ -138,10 +139,33 @@ class TuiSessionState:
     def refresh_discovered_presets(self) -> None:
         self.available_presets = discover_presets()
 
+    def _set_weights_from_pairs(self, pairs: Sequence[Tuple[str, float]]) -> None:
+        cleaned: List[Tuple[str, float]] = []
+        self.weight_dirs = {}
+        for expr, raw_w in pairs:
+            key = str(expr)
+            val = float(raw_w)
+            self.weight_dirs[key] = "min" if val < 0 else "max"
+            cleaned.append((key, round(min(1.0, abs(val)), 2)))
+        self.weights = cleaned
+
+    def _signed_weight_map(self) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        for expr, raw_w in self.weights:
+            mag = min(1.0, abs(float(raw_w)))
+            if mag <= 1e-9:
+                continue
+            is_min = (raw_w < 0) or (self.weight_dirs.get(expr) == "min" and raw_w >= 0)
+            out[expr] = round(-mag if is_min else mag, 4)
+        return out
+
     def _snapshot_current_profile(self) -> Dict[str, Any]:
         return {
             "mode": self.mode,
-            "weights": {k: v for k, v in self.weights},
+            "weights": {
+                expr: round((-min(1.0, abs(w)) if (w < 0 or self.weight_dirs.get(expr) == "min") else min(1.0, abs(w))), 2)
+                for expr, w in self.weights
+            },
             "formulas": list(self.formulas),
             "where": list(self.where),
             "limits": list(self.limits),
@@ -178,7 +202,7 @@ class TuiSessionState:
         elif cfg:
             self.rules = list(cfg.rules)
 
-        self.weights = [(str(k), float(v)) for k, v in (prof_data.get("weights") or {}).items()]
+        self._set_weights_from_pairs([(str(k), float(v)) for k, v in (prof_data.get("weights") or {}).items()])
 
     def _rebuild_columns_and_pools(self) -> None:
         ref_cache: Dict[str, List[Dict[str, Any]]] = {}
@@ -300,7 +324,7 @@ class TuiSessionState:
         self.limits = []
         self.rules = []
         self._rebuild_columns_and_pools()
-        self.weights = _suggest_weights_from_slots(self.slot_pools, self.mode)
+        self._set_weights_from_pairs(_suggest_weights_from_slots(self.slot_pools, self.mode))
         self.saved_profiles = {"default": self._snapshot_current_profile()}
         self.dirty = True
         self.re_solve()
@@ -399,28 +423,49 @@ class TuiSessionState:
         self.status_message = f"Detached reference DB '{ref_key}'."
 
     def adjust_weight(self, idx: int, delta: float) -> None:
+        """Adjusts weight strength strictly within `[0.0, 1.0]` while preserving maximize/minimize direction."""
         if idx < 0 or idx >= len(self.weights):
             return
         expr, val = self.weights[idx]
-        new_val = round(val + delta, 2)
-        self.weights[idx] = (expr, new_val)
+        if val < 0 and expr not in self.weight_dirs:
+            self.weight_dirs[expr] = "min"
+        new_mag = round(min(1.0, max(0.0, abs(val) + delta)), 2)
+        self.weights[idx] = (expr, new_mag)
         self.dirty = True
         self.re_solve()
-        direction = "↑ max" if new_val > 0 else ("↓ min" if new_val < 0 else "· neutral")
-        self.status_message = f"{expr}: {new_val:+.2f} ({direction})"
+        direction = "↓ min" if self.weight_dirs.get(expr) == "min" else "↑ max"
+        self.status_message = f"{expr}: {new_mag:.2f} ({direction}) [0.00 .. 1.00]"
+
+    def toggle_weight_direction(self, idx: int) -> None:
+        """Flips a weight between ↑ maximize and ↓ minimize without changing its `[0, 1]` magnitude."""
+        if idx < 0 or idx >= len(self.weights):
+            return
+        expr, val = self.weights[idx]
+        curr_min = (val < 0) or (self.weight_dirs.get(expr) == "min")
+        self.weight_dirs[expr] = "max" if curr_min else "min"
+        self.weights[idx] = (expr, round(min(1.0, abs(val)), 2))
+        self.dirty = True
+        self.re_solve()
+        arrow = "↓ min" if self.weight_dirs[expr] == "min" else "↑ max"
+        self.status_message = f"{expr}: direction flipped -> {arrow}"
 
     def add_or_update_weight(self, expr: str, weight: float) -> None:
         clean = expr.strip()
         parse_weights([f"{clean}:{weight}"])
+        self.weight_dirs[clean] = "min" if weight < 0 else self.weight_dirs.get(clean, "max")
+        if weight >= 0 and "-" not in str(weight):
+            self.weight_dirs[clean] = "max"
+        mag = round(min(1.0, abs(float(weight))), 2)
         for i, (e, _) in enumerate(self.weights):
             if e == clean:
-                self.weights[i] = (clean, round(float(weight), 2))
+                self.weights[i] = (clean, mag)
                 break
         else:
-            self.weights.append((clean, round(float(weight), 2)))
+            self.weights.append((clean, mag))
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Weight set: {clean} = {weight:+.2f}"
+        arrow = "↓ min" if self.weight_dirs[clean] == "min" else "↑ max"
+        self.status_message = f"Weight set: {clean} = {mag:.2f} ({arrow})"
 
     def remove_weight(self, idx: int) -> None:
         if 0 <= idx < len(self.weights):
@@ -517,7 +562,7 @@ class TuiSessionState:
 
     def re_solve(self) -> None:
         try:
-            weight_map = {expr: w for expr, w in self.weights if abs(w) > 1e-9}
+            weight_map = self._signed_weight_map()
             if not self.slot_pools:
                 self.results = []
                 self.meta = {}
@@ -591,13 +636,9 @@ class TuiSessionState:
 
 
 def _format_weight_bar(weight: float, width: int = 8) -> str:
-    mag = min(1.0, abs(weight))
+    mag = max(0.0, min(1.0, abs(weight)))
     filled = max(0, min(width, int(round(mag * width))))
-    if weight > 0:
-        return "█" * filled + "░" * (width - filled)
-    if weight < 0:
-        return "▓" * filled + "░" * (width - filled)
-    return "░" * width
+    return "█" * filled + "░" * (width - filled)
 
 
 @dataclass
@@ -613,17 +654,30 @@ class _WorkspaceItem:
 def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
     items: List[_WorkspaceItem] = []
 
-    items.append(_WorkspaceItem(kind="header", label="WEIGHTS  (←/→ or -/+ to tune)", tone="accent"))
+    items.append(_WorkspaceItem(kind="header", label="WEIGHTS 0..1 (←/→ tune · t:↑/↓ dir · pink < 1/N%)", tone="accent"))
     if state.weights:
-        for idx, (expr, val) in enumerate(state.weights):
-            bar = _format_weight_bar(val, width=7)
-            arrow = "↑ max" if val > 0 else ("↓ min" if val < 0 else "· off")
-            tone = "pos" if val > 0 else ("min" if val < 0 else "muted")
+        mags = [min(1.0, abs(w)) for _, w in state.weights]
+        total_w = sum(mags)
+        active_n = sum(1 for m in mags if m > 1e-9)
+        eq_threshold = (1.0 / active_n) if active_n > 0 else 1.0
+        for idx, ((expr, val), mag) in enumerate(zip(state.weights, mags)):
+            bar = _format_weight_bar(mag, width=7)
+            is_min = (val < 0) or (state.weight_dirs.get(expr) == "min")
+            arrow = "↓ min" if is_min else "↑ max"
+            share = (mag / total_w) if total_w > 1e-9 else 0.0
+            pct = int(round(share * 100))
+            if mag <= 1e-9:
+                tone = "muted"
+                arrow = "· off"
+            elif share < eq_threshold - 1e-9:
+                tone = "min"  # pink highlight when normalized share is below 1/N% of total weight
+            else:
+                tone = "pos"
             items.append(
                 _WorkspaceItem(
                     kind="weight",
                     index=idx,
-                    label=f" {expr:<18} [{bar}] {val:+5.2f} {arrow}",
+                    label=f" {expr:<16} [{bar}] {mag:.2f} {pct:>2}% {arrow}",
                     tone=tone,
                 )
             )
@@ -1110,8 +1164,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
             return
         w_str = _modal_text_input(
             stdscr,
-            "Weight Direction & Strength",
-            f"Enter signed weight for '{expr}' (+ maximizes, - minimizes, e.g. 0.5 or -0.4):",
+            "Weight Strength (0.0 .. 1.0)",
+            f"Strength for '{expr}' in [0, 1] (prefix '-' to start as ↓ minimize, e.g. 0.5 or -0.3):",
             initial="0.5",
         )
         if not w_str:
@@ -1447,6 +1501,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
             elif ch == ord("["):
                 if ws_items[left_cursor].kind == "weight":
                     state.adjust_weight(ws_items[left_cursor].index, -0.05)
+            elif ch in (ord("t"), ord("T"), ord(" ")):
+                if ws_items[left_cursor].kind == "weight":
+                    state.toggle_weight_direction(ws_items[left_cursor].index)
             elif ch in (ord("d"), ord("D"), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
                 cur = ws_items[left_cursor]
                 if cur.kind == "weight":
