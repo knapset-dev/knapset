@@ -6,9 +6,16 @@ __pycache__/
 dist/
 build/
 
+# Arch Linux / makepkg build artifacts
+pkg/
+src/
+*.pkg.tar.zst
+*.pkg.tar.zst.sha256
+
 # Market caches, audit decisions & local SQLite databases
 data/*_market_cache.json
 data/marketplace_cache.json
+data/installed_modules.json
 data/.currency_cache.json
 data/fx_rates_cache.json
 data/*.db
@@ -19,7 +26,6 @@ data/audit_ledger.json
 data/ai_verified_components.json
 data/pc/
 knapset_market.db
-omniforge_market.db
 *.db
 *.db-shm
 *.db-wal

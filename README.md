@@ -26,7 +26,7 @@ data/*_market_cache.json  --->  knapset_market.db  --->  knapset (core)  <---  k
 - **Constraint solver (`set_synthesizer.py`, `domain_layout.py`)**: A generic N-slot beam-search solver that maximizes a domain's utility function under a budget and hard compatibility rules.
 - **Storage (`market_store.py`)**: SQLite database with WAL mode, an FTS5 full-text index on listing titles, and an append-only `price_history` table.
 - **Currency converter (`currency.py`)**: Multi-currency engine (default `USDT`), with opt-in live rate synchronization (`api.binance.com` / `open.er-api.com`), 24-hour file caching (`data/.currency_cache.json`), and calibrated offline rates (`USD=1.0`, `UAH=41.5`, `EUR=0.92`, `SEK=10.5`, `PLN=4.0`, `GBP=0.79`).
-- **Watchdog (`watchdog.py`)**: Scans the database against saved search profiles and prints or POSTs alerts (Telegram / Discord webhooks). Run `--once` from cron or `--interval` as a foreground loop.
+- **Watchdog (`watchdog.py`)**: Scans the database for verified price drops in a domain (`--domain <id>`) and prints or POSTs alerts (Telegram / Discord webhooks). Run `--once` from cron or `--interval` as a foreground loop.
 - **Interfaces**:
   - `main.py` — command-line entry point.
   - `web_server.py` — local HTTP server (`http.server`) serving a single-page dashboard and JSON endpoints.
@@ -53,10 +53,12 @@ Install globally (`ks` and `knapset` commands in `$PATH`):
 sudo pacman -U https://github.com/knapset-dev/knapset/releases/download/v1.0.0/knapset-1.0.0-1-any.pkg.tar.zst
 
 # Or build locally from packaging/aur/PKGBUILD:
-curl -fsSLO https://raw.githubusercontent.com/knapset-dev/knapset/main/packaging/aur/PKGBUILD && updpkgsums && makepkg -si
+curl -fsSLO https://raw.githubusercontent.com/knapset-dev/knapset/main/packaging/aur/PKGBUILD && makepkg -si
 
-# Cross-platform via uv (zero external Python dependencies):
-uv tool install git+https://github.com/knapset-dev/knapset.git
+# Cross-platform via PyPI / uv (zero external Python dependencies):
+uv tool install knapset
+# Or run ephemerally without installing:
+uvx --from knapset ks --help
 
 # Run from any directory once installed:
 ks --help
@@ -92,8 +94,8 @@ git clone https://github.com/knapset-dev/knapset-registry.git ../knapset-registr
 # Point the marketplace client at your local registry checkout (or let it fetch from GitHub)
 export KNAPSET_REGISTRY_URL="file://$(realpath ../knapset-registry)/registry.json"
 
-python3 main.py market list
-python3 main.py market install <extension-id>   # e.g. fishing, pc
+python3 main.py module search
+python3 main.py module install <extension-id>   # e.g. fishing, pc
 ```
 
 Once a domain is installed, all commands are explicitly prefixed with `<domain>`:
@@ -132,14 +134,13 @@ If no database or cache files exist, `build` and `search` commands return empty 
 | `python3 main.py <domain> modes` | List scoring modes defined by `<domain>`. |
 | `python3 main.py <domain> search -s <section> [filters]` | Search candidates in a section of `<domain>` (e.g., `python3 main.py template search -s core`). |
 | `python3 main.py <domain> <section> [filters]` | Direct shortcut for section search (e.g., `python3 main.py template core`). |
-| `python3 main.py market list [--type <type>]` | List extensions and modules available in the registry. |
-| `python3 main.py market install <id>` | Download, verify (SHA-256), and install a module or extension. |
-| `python3 main.py market install-bundle <id>` | Install a curated bundle of modules from the registry. |
-| `python3 main.py market uninstall <id>` | Remove an installed module. |
-| `python3 main.py watch --list` | List configured price-watch profiles (`configs/watch_profiles.json`). |
-| `python3 main.py watch --once` | Evaluate watch profiles once against the local database and exit. |
-| `python3 main.py watch --interval 600` | Poll the local database every 600 seconds. |
-| `python3 main.py fx [--convert 100 --from USD]` | Show current exchange rates or convert an amount to UAH. |
+| `python3 main.py module search [query]` | Search extensions, modules, and bundles available in the registry. |
+| `python3 main.py module list` | List currently installed marketplace modules. |
+| `python3 main.py module install <id>` | Download, verify (SHA-256), and install a module, extension, or `bundle:<id>`. |
+| `python3 main.py module remove <id>` | Remove an installed module. |
+| `python3 main.py watch -D <domain> --once` | Evaluate price drops once for `<domain>` and exit. |
+| `python3 main.py watch -D <domain> --interval 600` | Poll market data and alert every 600 seconds. |
+| `python3 main.py fx [--refresh]` | Show current exchange rates or refresh cached live rates. |
 | `python3 main.py serve [-p 8080]` | Start the local web UI on `http://127.0.0.1:8080`. |
 | `python3 main.py mcp` | Start the MCP JSON-RPC server on `stdio`. |
 
@@ -147,31 +148,29 @@ If no database or cache files exist, `build` and `search` commands return empty 
 
 ## Web UI and HTTP API
 
-`python3 main.py serve -p 8080` starts a local server with five tabs:
+`python3 main.py serve -p 8080` starts a local server with four tabs:
 
-1. **System Builder** — runs `POST /api/build` for the selected domain, budget, and mode.
-2. **Component Explorer** — queries `GET /api/listings` (backed by SQLite FTS5).
-3. **Market Overview** — shows listing counts per source and category from `GET /api/stats`.
-4. **Bundle / Listing Evaluator** — calls `POST /api/prebuilt` (when a domain extension registers a bundle evaluator; returns HTTP 400 otherwise).
-5. **Extensions & Marketplace** — lists and installs plugins via `GET /api/marketplace` and `POST /api/marketplace/install`.
+1. **Set & Build Synthesizer** — runs `GET /api/build?domain=<domain>&budget=<amount>&mode=<mode>&currency=<CODE>`.
+2. **Section Search** — queries `GET /api/search?domain=<domain>&section=<section>&query=<text>`.
+3. **Price Drops & History** — inspects historical drops via `GET /api/deals?min_drop_pct=3.0`.
+4. **Prebuilt PC Evaluator** — calls `GET /api/prebuilt` (active when a domain extension provides `evaluate_prebuilt`, such as `pc`; returns HTTP 400 otherwise).
 
 Additional endpoints:
 
-- `GET /api/extensions` — list installed domain extensions, their sections, and modes.
-- `GET /api/fx` — current exchange rates and cache age.
-- `GET /api/price-history?offer_id=<id>&source=<src>` — historical price points for an offer.
+- `GET /api/health` — server health and SQLite store readiness.
+- `GET /api/domains` — list installed domain extensions, their sections, and modes.
 
 ---
 
 ## MCP server (LLM tool use)
 
-`python3 main.py mcp` speaks JSON-RPC 2.0 over `stdio` (both `Content-Length` framed and newline-delimited JSON). It exposes five tools:
+`python3 main.py mcp` speaks JSON-RPC 2.0 over `stdio` (both `Content-Length` framed and newline-delimited JSON). It exposes four core tools (plus extension-contributed tools):
 
-- `list_domains`
-- `search_market_listings`
-- `compose_optimal_build`
-- `get_item_price_history`
-- `evaluate_prebuilt_pc` *(active when the optional `pc` extension is installed)*
+- `knapset_list_domains`
+- `knapset_build_set`
+- `knapset_search_section`
+- `knapset_price_drops`
+- `knapset_evaluate_prebuilt_pc` *(active when the optional `pc` extension is installed)*
 
 Example Claude Desktop configuration:
 
@@ -216,7 +215,7 @@ knapset/
 ├── component_analyser/      # Component scorer plugin interface
 ├── build_composer/          # Build composer plugin interface
 ├── ai_providers/            # Optional LLM / vision inspection plugin interface
-├── configs/                 # Watchdog profiles and mode weight presets
+├── configs/                 # Currency defaults and mode weight presets
 ├── docs/                    # Domain guides, logo assets, and CLI demo GIF
 ├── packaging/               # Distribution manifests (AUR PKGBUILD)
 └── tests/                   # unittest suite (170 tests)
