@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -474,6 +475,72 @@ def get_user_presets_dir() -> Path:
     xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip()
     base = Path(xdg_cfg).expanduser().resolve() if xdg_cfg else (Path.home() / ".config")
     return (base / "knapset" / "presets").resolve()
+
+
+def get_user_profiles_dir() -> Path:
+    """Shared, source-independent library of saved preference profiles (weights/formulas/limits/rules)."""
+    return (get_user_presets_dir().parent / "profiles").resolve()
+
+
+PROFILE_FILE_SCHEMA = "knapset-profile/1"
+_PROFILE_KEYS = ("mode", "weights", "formulas", "where", "limits", "rules")
+
+
+def _clean_profile_name(name: str) -> str:
+    clean = re.sub(r"[^a-z0-9_.-]+", "_", str(name).strip().lower()).strip("_.")
+    if not clean:
+        raise ValueError("Profile name cannot be empty.")
+    return clean
+
+
+def save_shared_profile(name: str, profile: Dict[str, Any], directory: Optional[Path] = None) -> Path:
+    """Writes a DB-independent preference profile to the shared profiles directory."""
+    clean = _clean_profile_name(name)
+    target_dir = Path(directory) if directory else get_user_profiles_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    payload: Dict[str, Any] = {"schema": PROFILE_FILE_SCHEMA, "name": clean}
+    for key in _PROFILE_KEYS:
+        if key in profile:
+            payload[key] = profile[key]
+    path = target_dir / f"{clean}.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
+def read_profile_file(path: str | Path, profile_name: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """
+    Reads a profile from either a standalone profile file (`knapset-profile/1`) or any v2 preset file
+    (using `profile_name`, the preset's default profile, or its first profile).
+    """
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(f"Profile file not found: '{p}'")
+    if p.suffix.lower() == ".toml":
+        cfg = load_preset(p)
+        key, data = cfg.resolve_profile(profile_name)
+        return key, dict(data)
+    raw = json.loads(p.read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and raw.get("schema") == PROFILE_FILE_SCHEMA:
+        data = {k: raw[k] for k in _PROFILE_KEYS if k in raw}
+        return _clean_profile_name(raw.get("name") or p.stem), data
+    cfg = load_preset(p)
+    key, data = cfg.resolve_profile(profile_name)
+    return key, dict(data)
+
+
+def list_shared_profiles(directory: Optional[Path] = None) -> Dict[str, Dict[str, Any]]:
+    """Returns {name: profile_dict} for every valid profile in the shared profiles directory."""
+    d = Path(directory) if directory else get_user_profiles_dir()
+    out: Dict[str, Dict[str, Any]] = {}
+    if not d.is_dir():
+        return out
+    for f in sorted(d.glob("*.json")):
+        try:
+            name, data = read_profile_file(f)
+        except Exception:
+            continue
+        out.setdefault(name, data)
+    return out
 
 
 def get_presets_dirs() -> List[Path]:

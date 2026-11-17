@@ -80,6 +80,11 @@ ks reg search --type theme
 ks reg install theme:nord --use
 ks reg theme list
 ks reg theme use soft-dark-pink
+
+# 9. Reuse saved preferences across DBs with the same column names
+#    In the TUI: `s` saves to ~/.config/knapset/profiles/, `l` (or /profiles) applies a saved profile
+#    (or loads one from any profile/preset file) onto whatever DB is open.
+ks tui other_shop.db --prefs my_prefs
 ```
 
 ---

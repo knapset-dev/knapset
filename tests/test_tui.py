@@ -259,5 +259,51 @@ class TestTuiSessionRestore(unittest.TestCase):
                 self.assertFalse(fourth.restore_saved_session())
 
 
+class TestSharedProfiles(unittest.TestCase):
+    def test_profile_saved_once_reused_across_dbs_and_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_a = root / "shop_a.csv"
+            db_b = root / "shop_b.csv"
+            db_a.write_text("name,price,score\nA,10,50\nB,20,90\nC,15,70\n", encoding="utf-8")
+            db_b.write_text("name,price,score,extra\nX,5,10,1\nY,9,80,2\n", encoding="utf-8")
+            with patch.dict(os.environ, {"KNAPSET_HOME": str(root / "home")}):
+                a = TuiSessionState()
+                a.load_from_source(str(db_a), mode="rank")
+                a.weights = [("score", 0.8), ("price", 0.2)]
+                a.weight_dirs = {"score": "max", "price": "min"}
+                a.save_preference_profile("Shared Prefs")
+                self.assertTrue((root / "home" / "profiles" / "shared_prefs.json").is_file())
+
+                # A different DB with the same column naming reuses it from the shared library
+                b = TuiSessionState()
+                b.load_from_source(str(db_b), mode="rank")
+                self.assertEqual(b.apply_shared_profile("shared_prefs"), [])
+                self.assertEqual(b.profile, "shared_prefs")
+                self.assertEqual(dict(b.weights)["score"], 0.8)
+                self.assertEqual(b.results[0]["row"]["name"], "Y")
+
+                # Columns missing in the new DB are skipped, not fatal
+                lone = root / "lone.csv"
+                lone.write_text("name,price\nQ,1\nR,2\n", encoding="utf-8")
+                c = TuiSessionState()
+                c.load_from_source(str(lone), mode="rank")
+                self.assertEqual(c.apply_shared_profile("shared_prefs"), ["score"])
+
+                # Loading straight from a profile file and from a full preset file both work
+                d = TuiSessionState()
+                d.load_from_source(str(db_b), mode="rank")
+                d.apply_shared_profile(str(root / "home" / "profiles" / "shared_prefs.json"), store=False)
+                self.assertEqual(d.profile, "shared_prefs")
+                preset_file = next((root / "home" / "presets").glob("*.json"))
+                e = TuiSessionState()
+                e.load_from_source(str(db_b), mode="rank")
+                e.apply_shared_profile(str(preset_file), store=False)
+                self.assertEqual(dict(e.weights)["score"], 0.8)
+
+                with self.assertRaises(KeyError):
+                    e.apply_shared_profile("does_not_exist")
+
+
 if __name__ == "__main__":
     unittest.main()

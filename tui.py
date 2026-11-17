@@ -15,6 +15,7 @@ import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 import queue
+import re
 import sys
 import threading
 import time
@@ -23,7 +24,17 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
 from formula_engine import LimitSpec, RuleSpec, SafeExpression, parse_formulas, parse_weights
-from preset_loader import PresetConfig, discover_presets, get_user_presets_dir, resolve_preset, save_preset
+from preset_loader import (
+    PresetConfig,
+    discover_presets,
+    get_user_presets_dir,
+    get_user_profiles_dir,
+    list_shared_profiles,
+    read_profile_file,
+    resolve_preset,
+    save_preset,
+    save_shared_profile,
+)
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.registry import open_source
 from theme_config import ThemeConfig, discover_themes, load_active_theme, set_active_theme
@@ -136,7 +147,7 @@ class TuiSessionState:
     results: List[Dict[str, Any]] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
     ref_stats: Dict[str, str] = field(default_factory=dict)
-    status_message: str = "↑↓ Select · ←/→ Slide Weight · s Save Preference · h Hop Profile · / Commands"
+    status_message: str = "↑↓ Select · ←/→ Slide Weight · s Save · l Load Saved Prefs · h Hop · / Commands"
     available_presets: Dict[str, PresetConfig] = field(default_factory=dict)
     active_preset_cfg: Optional[PresetConfig] = None
 
@@ -578,8 +589,65 @@ class TuiSessionState:
         target = out_path or (get_user_presets_dir() / f"{self.preset_name or 'workspace'}.json")
         saved = self.export_preset(target, preset_name=self.preset_name)
         self.refresh_discovered_presets()
-        self.status_message = f"Saved preference '{clean}' -> {saved}"
+        shared = save_shared_profile(clean, self.saved_profiles[clean])
+        self.status_message = f"Saved '{clean}' -> {shared} (reusable on any DB with the same columns)"
         return saved
+
+    def apply_shared_profile(self, name_or_path: str, profile_name: Optional[str] = None, store: bool = True) -> List[str]:
+        """
+        Applies a saved preference profile (from the shared profiles directory or any profile/preset
+        file) onto the *currently open* DBs. Returns a list of weight expressions skipped because their
+        column does not exist in this DB.
+        """
+        p = Path(name_or_path).expanduser()
+        if p.is_file():
+            name, data = read_profile_file(p, profile_name)
+        else:
+            lib = list_shared_profiles()
+            key = name_or_path.strip().lower()
+            if key not in lib:
+                raise KeyError(f"Saved profile '{name_or_path}' not found in {get_user_profiles_dir()}")
+            name, data = key, lib[key]
+        if not self.sources:
+            raise ValueError("Open a database first, then apply a saved profile.")
+
+        known = set(self.available_columns)
+        known.update(c.split(".", 1)[1] for c in self.available_columns if "." in c)
+        for f_str in data.get("formulas") or []:
+            if "=" in str(f_str):
+                known.add(str(f_str).split("=", 1)[0].strip())
+        skipped: List[str] = []
+        weights: Dict[str, float] = {}
+        for expr, w in (data.get("weights") or {}).items():
+            e = str(expr).strip()
+            if re.fullmatch(r"[A-Za-z_][\w.]*", e) and e not in known:
+                skipped.append(e)
+                continue
+            weights[e] = float(w)
+
+        prof = dict(data)
+        prof["weights"] = weights
+        if prof.get("mode") == "solve" and len(self.sources) < 2:
+            prof["mode"] = self.mode
+        snapshot = (self.profile, self.mode, list(self.weights), dict(self.weight_dirs),
+                    list(self.formulas), list(self.where), list(self.limits), list(self.rules))
+        self._apply_profile_dict(name, prof, cfg=None)
+        self._rebuild_columns_and_pools()
+        self.status_message = ""
+        self.re_solve()
+        if self.status_message.startswith("Check expression"):
+            (self.profile, self.mode, self.weights, self.weight_dirs,
+             self.formulas, self.where, self.limits, self.rules) = snapshot
+            self._rebuild_columns_and_pools()
+            self.re_solve()
+            raise ValueError(f"Profile '{name}' does not fit this DB (check columns / formulas).")
+        self.saved_profiles[name] = self._snapshot_current_profile()
+        self.dirty = True
+        if store:
+            save_shared_profile(name, self.saved_profiles[name])
+        note = f" (skipped missing columns: {', '.join(skipped)})" if skipped else ""
+        self.status_message = f"Applied saved profile '{name}'{note}."
+        return skipped
 
     def switch_profile(self, profile_name: str) -> None:
         """Hops to another saved preference profile without unloading your DBs/References."""
@@ -1232,6 +1300,33 @@ def run_curses_tui(state: TuiSessionState) -> None:
         except Exception as exc:
             state.status_message = f"Failed loading preset: {exc}"
 
+    def _action_load_profile(stdscr: Any) -> None:
+        lib = list_shared_profiles()
+        names = list(lib.keys())
+        choices = []
+        for n in names:
+            d = lib[n]
+            wsum = ", ".join(f"{k}:{v:+g}" for k, v in list((d.get("weights") or {}).items())[:3])
+            choices.append((n, f"[{d.get('mode', '-')}] {wsum}"))
+        choices.append(("✎ Load profile / preset file path...", "any .json / .toml with profiles"))
+        pick = _modal_picker(
+            stdscr,
+            "Saved Preferences (apply to current DB)",
+            choices,
+            hint=f"Enter Apply · Esc Cancel · stored in {get_user_profiles_dir()}",
+        )
+        if pick is None:
+            return
+        try:
+            if pick == len(names):
+                path_in = _modal_text_input(stdscr, "Load Profile File", "Enter profile / preset .json or .toml path:")
+                if path_in:
+                    state.apply_shared_profile(path_in)
+            else:
+                state.apply_shared_profile(names[pick])
+        except Exception as exc:
+            state.status_message = f"Load profile failed: {exc}"
+
     def _action_save_preference(stdscr: Any) -> None:
         name_in = _modal_text_input(
             stdscr,
@@ -1404,6 +1499,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
             ("/ref", "Attach a Reference DB (--ref)"),
             ("/save-pref", "Save current preferences as named profile (persists for reuse)"),
             ("/hop", "Cycle / hop between saved preference profiles"),
+            ("/profiles", "Apply a saved preference (from shared library or a file) to this DB"),
             ("/preset", "Load a saved preset file or installed registry preset"),
             ("/weight", "Add a weighted column or ratio expression"),
             ("/formula", "Create a new formula using available DB fields"),
@@ -1426,6 +1522,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
             _action_save_preference(stdscr)
         elif cmd == "/hop":
             state.cycle_profile()
+        elif cmd == "/profiles":
+            _action_load_profile(stdscr)
         elif cmd == "/preset":
             _action_pick_preset(stdscr)
         elif cmd == "/weight":
@@ -1455,7 +1553,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     ("← / → or - / +", "Adjust weight (-0.10 / +0.10; [ / ] for ±0.05)"),
                     ("Enter", "Hop profile / Repick DB slot / Open '+ Add' composer"),
                     ("d / Backspace", "Delete weight, profile, formula, limit, rule, DB slot, or Ref DB"),
-                    ("s / h", "Save current preferences as profile / Hop to next profile"),
+                    ("s / l / h", "Save preferences to shared library / Load saved preferences (library or file) / Hop profile"),
                     ("o / p / m / e", "Open Main DB / Preset picker / Cycle Mode / Explain toggle"),
                     ("Tab / /", "Switch Config<->Results pane / Open Command Palette"),
                     ("q", "Quit TUI"),
@@ -1770,6 +1868,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 _action_save_preference(stdscr)
                 force_clear = True
                 continue
+            if ch in (ord("l"), ord("L")):
+                _flush_pending_solve()
+                _action_load_profile(stdscr)
+                force_clear = True
+                continue
 
             if ch == curses.KEY_MOUSE:
                 try:
@@ -1975,6 +2078,7 @@ def run_tui(argv: List[str]) -> None:
     parser.add_argument("--ref", default=None, help="Optional reference DB to attach")
     parser.add_argument("--match", default=None, help="Match expression for --ref")
     parser.add_argument("--mode", choices=["solve", "basket", "rank"], default=None, help="Initial solver mode")
+    parser.add_argument("--prefs", default=None, help="Saved preference profile name or profile/preset file to apply to the opened DB")
     parser.add_argument("--fresh", action="store_true", help="Ignore previously saved preferences for this source")
     args = parser.parse_args(argv)
 
@@ -1994,5 +2098,11 @@ def run_tui(argv: List[str]) -> None:
             state.load_from_source(args.target, ref_path=args.ref, match_expr=args.match, mode=args.mode)
             if not args.fresh:
                 state.restore_saved_session(overlay_only=bool(args.ref or args.mode or args.match))
+
+    if args.prefs:
+        try:
+            state.apply_shared_profile(args.prefs)
+        except Exception as exc:
+            state.status_message = f"--prefs failed: {exc}"
 
     run_curses_tui(state)
