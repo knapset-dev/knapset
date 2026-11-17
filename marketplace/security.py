@@ -187,6 +187,7 @@ NETWORK_MODULES: Set[str] = {
 }
 
 CORE_ALLOWED_MODULES: Set[str] = {
+    "app_paths",
     "currency",
     "info_providers",
     "scam_analyser",

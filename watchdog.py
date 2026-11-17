@@ -148,8 +148,10 @@ def run_watchdog_once(
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    from app_paths import get_cli_prog
+
     parser = argparse.ArgumentParser(
-        prog="main.py watch",
+        prog=f"{get_cli_prog()} watch",
         description="Autonomous deal watchdog: refresh market data and alert on verified price drops.",
     )
     parser.add_argument("--domain", "-D", required=True, help="Domain to watch (e.g. an installed extension id)")

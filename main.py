@@ -57,26 +57,26 @@ def show_onboarding_tutorial(requested_domain: Optional[str] = None, quiet: bool
         print("\n  Notice: No domain extensions installed yet.")
         print("  Knapset is domain-agnostic by default. Choose a domain package to begin:")
 
+    prog = _cli_prog()
     print("\n  Getting Started — Choose an Option:")
     print("  ────────────────────────────────────────────────────────────────────────────")
     print("  1. Browse and install domain packages from the registry:")
-    print("     • python main.py module search")
-    print("     • python main.py module info <name>")
-    print(f"     • python main.py module install {requested_domain or '<name>'}")
+    print(f"     • {prog} module search")
+    print(f"     • {prog} module info <name>")
+    print(f"     • {prog} module install {requested_domain or '<name>'}")
     print()
     print("  2. Or declare a declarative domain in configs/blueprints/<domain>.json")
     print()
     print("  3. Scaffold a new custom domain extension:")
-    print("     • python main.py module new --type extension --name my_domain")
+    print(f"     • {prog} module new --type extension --name my_domain")
     print()
     print("  4. Inspect the built-in reference template domain:")
-    print("     • python main.py domains --inspect template")
-    print("     • python main.py template build -b 1000")
+    print(f"     • {prog} domains --inspect template")
+    print(f"     • {prog} template build -b 1000")
     print("  ────────────────────────────────────────────────────────────────────────────")
     print()
     print("  Usage After Installing a Domain Package:")
     print("  ────────────────────────────────────────────────────────────────────────────")
-    prog = _cli_prog()
     print("\n  All domain commands are prefixed with the domain name:")
     print(f"     • Optimal Set Synthesis    : {prog} <domain> build -b <budget> (e.g. {prog} <domain> build -b 850)")
     print(f"     • Domain Help & Commands   : {prog} <domain> --help")
@@ -142,7 +142,7 @@ def _run_sync(argv: List[str]) -> None:
     from extension_registry import list_extensions, find_extension_by_section
 
     parser = argparse.ArgumentParser(
-        prog="main.py sync",
+        prog=f"{_cli_prog()} sync",
         description="Synchronize local JSON market caches into SQLite MarketStore and inspect cache status.",
     )
     parser.add_argument(
@@ -210,7 +210,7 @@ def _run_sync(argv: List[str]) -> None:
         providers_to_show = ["olx", "telemart", "all"] if prov in ("all", "multi") else [prov]
         domains_to_show = [target_domain] if target_domain else [d for d in extensions.keys() if d != "template"]
         if not domains_to_show:
-            print("No domain extensions installed. Install one via 'main.py module install <domain>'.")
+            print(f"No domain extensions installed. Install one via '{_cli_prog()} module install <domain>'.")
             return
 
         for d_name in domains_to_show:
@@ -271,11 +271,12 @@ def _run_sync(argv: List[str]) -> None:
                 secs = ", ".join(layout.section_ids()) if layout else "N/A"
                 print(f"  • {d_id:<12} (Sections: {secs})")
         else:
-            print("  (No domain packages installed yet. Install one via 'main.py module install <name>' or sync with -c)")
+            print(f"  (No domain packages installed yet. Install one via '{_cli_prog()} module install <name>' or sync with -c)")
         print("\nExamples:")
-        print("  python main.py sync <domain>             # Index local JSON caches into SQLite")
-        print("  python main.py sync -c gpu,cpu           # Index specific sections")
-        print("  python main.py sync --status             # View freshness of existing caches\n")
+        prog = _cli_prog()
+        print(f"  {prog} sync <domain>             # Index local JSON caches into SQLite")
+        print(f"  {prog} sync -c gpu,cpu           # Index specific sections")
+        print(f"  {prog} sync --status             # View freshness of existing caches\n")
         return
 
     domain_tag = f" [{target_domain.upper()}]" if target_domain else ""
@@ -303,7 +304,7 @@ def _run_sync(argv: List[str]) -> None:
 def _run_modes(argv: List[str]) -> None:
     from extension_registry import get_extension, list_domain_ids
 
-    parser = argparse.ArgumentParser(prog="main.py modes", description="List Optimization Modes ('Mods')")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} modes", description="List Optimization Modes ('Mods')")
     parser.add_argument("--domain", "-D", type=str, default=None, help="Target domain extension (e.g. pc, template)")
     parser.add_argument("--inspect", "-i", type=str, default=None, help="Inspect weights & rules of a specific mode")
     args = parser.parse_args(argv)
@@ -315,7 +316,7 @@ def _run_modes(argv: List[str]) -> None:
         ext = get_extension(target_domain)
     except KeyError:
         print(f"\n[WARN] Domain '{target_domain}' not found.", file=sys.stderr)
-        print("Install an extension via 'python main.py module install <name>' or inspect 'template'.\n", file=sys.stderr)
+        print(f"Install an extension via '{_cli_prog()} module install <name>' or inspect 'template'.\n", file=sys.stderr)
         return
 
     w_reg = ext.get_weights_registry()
@@ -346,7 +347,7 @@ def _run_modes(argv: List[str]) -> None:
 def _run_domains(argv: List[str]) -> None:
     from extension_registry import list_extensions
 
-    parser = argparse.ArgumentParser(prog="main.py domains", description="List Registered Domain Extensions")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} domains", description="List Registered Domain Extensions")
     parser.add_argument("--inspect", "-i", type=str, default=None, help="Inspect detailed layout & weights for a domain")
     args = parser.parse_args(argv)
 
@@ -398,7 +399,7 @@ def _run_domains(argv: List[str]) -> None:
 def _run_search(argv: List[str]) -> None:
     from extension_registry import get_extension
 
-    parser = argparse.ArgumentParser(prog="main.py search", description="Search & filter items by domain criteria")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} search", description="Search & filter items by domain criteria")
     parser.add_argument("--domain", "-D", type=str, required=True, help="Target domain extension id")
     parser.add_argument("--section", "-s", type=str, default=None, help="Target component section (e.g. rod, reel, gpu, cpu)")
     parser.add_argument("--query", "-q", type=str, default=None, help="Text search query")
@@ -463,14 +464,14 @@ def _run_search(argv: List[str]) -> None:
     )
 
 
-def _run_history(argv: List[str], default_domain: Optional[str] = None, prog: str = "main.py history") -> None:
+def _run_history(argv: List[str], default_domain: Optional[str] = None, prog: Optional[str] = None) -> None:
     import json
     from analyzer_core import make_terminal_link, pad_ansi
     from currency import canonical_currency, convert_currency, format_price, get_active_currency
     from market_store import market_store
 
     parser = argparse.ArgumentParser(
-        prog=prog,
+        prog=prog or f"{_cli_prog()} history",
         description="Inspect SQLite MarketStore statistics, verified seller price drops, and chronological price history.",
     )
     parser.add_argument("--domain", "-D", type=str, default=default_domain, help="Filter by domain (e.g. pc, fishing)")
@@ -535,7 +536,7 @@ def _run_history(argv: List[str], default_domain: Optional[str] = None, prog: st
 
     if not drops:
         print(f"\n  No verified price drops >= {args.min_drop:.1f}% recorded yet.")
-        print("  Tip: Run 'python main.py sync <domain>' periodically to accumulate time-series price snapshots.\n")
+        print(f"  Tip: Run '{_cli_prog()} sync <domain>' periodically to accumulate time-series price snapshots.\n")
         return
 
     print(f"\nTop {len(drops)} Verified Seller Price Drops (>= {args.min_drop:.1f}% below peak, in {active_curr}):\n")
@@ -569,7 +570,7 @@ def _run_history(argv: List[str], default_domain: Optional[str] = None, prog: st
 def _run_fx(argv: List[str]) -> None:
     import currency
 
-    parser = argparse.ArgumentParser(prog="main.py fx", description="Inspect or refresh exchange rates (units per 1 USDT)")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} fx", description="Inspect or refresh exchange rates (units per 1 USDT)")
     parser.add_argument("--refresh", "-r", action="store_true", help="Fetch live rates (network) and update the local cache")
     parser.add_argument("--timeout", type=float, default=5.0, help="Network timeout in seconds (default: 5)")
     args = parser.parse_args(argv)
@@ -597,7 +598,7 @@ def _run_fx(argv: List[str]) -> None:
 def _run_ledger(argv: List[str]) -> None:
     from audit_ledger import ledger
 
-    parser = argparse.ArgumentParser(prog="main.py ledger", description="Inspect persistent SHA-256 AI AuditLedger")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} ledger", description="Inspect persistent SHA-256 AI AuditLedger")
     parser.add_argument("--category", "-c", type=str, default=None, help="Filter records by category")
     parser.add_argument("--limit", "-n", type=int, default=10, help="Number of recent audit entries to display (default: 10)")
     parser.add_argument("--clear", action="store_true", help="Clear cached audit records (for --category or entire ledger)")
@@ -680,7 +681,7 @@ def _run_modules(argv: List[str]) -> None:
     from component_analyser import get_component_registry
     import json
 
-    parser = argparse.ArgumentParser(prog="main.py modules", description="Inspect pluggable modules across all 5 decoupled subsystems")
+    parser = argparse.ArgumentParser(prog=f"{_cli_prog()} modules", description="Inspect pluggable modules across all 5 decoupled subsystems")
     parser.add_argument(
         "--subsystem", "-s",
         type=str,
@@ -868,7 +869,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         # 1. Direct domain invocation (e.g. 'python main.py pc ...', 'python main.py fishing ...', 'python main.py template ...')
         if cmd in list_domain_ids():
             if extra and extra[0].lower() in ("history", "deals"):
-                _run_history(extra[1:], default_domain=cmd, prog=f"main.py {cmd} {extra[0].lower()}")
+                _run_history(extra[1:], default_domain=cmd, prog=f"{_cli_prog()} {cmd} {extra[0].lower()}")
                 return
             ext = get_extension(cmd)
             ext.run_cli(extra)
@@ -902,7 +903,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         elif cmd == "sync":
             _run_sync(extra)
         elif cmd in ("history", "deals"):
-            _run_history(extra, prog=f"main.py {cmd}")
+            _run_history(extra, prog=f"{_cli_prog()} {cmd}")
         elif cmd == "providers":
             import ai_providers
             ai_providers.main(extra)

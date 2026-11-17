@@ -54,7 +54,7 @@ No configuration files need to be edited. Test your module immediately:
 
 ```bash
 # Check that your module is auto-discovered:
-python3 main.py modules
+python3 main.py modules   # or: ks modules
 
 # Inspect marketplace JSON manifest output:
 python3 main.py modules --json

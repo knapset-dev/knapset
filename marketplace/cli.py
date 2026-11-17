@@ -25,9 +25,48 @@ def format_trust_badge(level: str) -> str:
     return "[COMMUNITY]"
 
 
+def _handle_install(client: MarketplaceClient, target: str, force: bool = False) -> None:
+    print(f"Installing '{target}'...")
+    ok, msg = client.install(target, force=force)
+    if not ok:
+        print(f"[FAIL] Failed to install '{target}':\n{msg}", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"[OK] {msg}")
+    prog = get_cli_prog()
+    target_clean = target.lower().strip()
+    if target_clean in ("pc", "extension:pc", "domain:pc"):
+        print("\nQuick Start Guide for PC Extension:")
+        print(f"  • Synthesize PC Build under budget : {prog} pc build -b 850")
+        print(f"  • Explore optimization modes       : {prog} pc modes")
+        print(f"  • View PC domain CLI help          : {prog} pc --help")
+        print(f"  • Search individual hardware parts : {prog} pc gpu --help (or cpu, mobo, ram, psu)\n")
+    elif target_clean in ("fishing", "extension:fishing", "domain:fishing"):
+        print("\nQuick Start Guide for Fishing Extension:")
+        print(f"  • Synthesize tackle set under budget : {prog} fishing build -b 150")
+        print(f"  • Explore fishing weight profiles    : {prog} fishing modes")
+        print(f"  • View Fishing domain CLI help       : {prog} fishing --help")
+        print(f"  • Search individual tackle parts     : {prog} fishing rod --help (or reel, line, bait)\n")
+    elif target_clean.startswith("bundle:") or "kit" in target_clean or "starter" in target_clean or "bundle" in msg.lower():
+        print("\nQuick Start Guide for Bundle / Kit:")
+        print(f"  • Inspect newly active modules : {prog} modules")
+        print(f"  • Run combinatorial solver     : {prog} pc build -b 850\n")
+    elif "extension" in msg.lower():
+        ext_name = target_clean.split(":")[-1]
+        print(f"\nQuick Start Guide for '{ext_name}':")
+        print(f"  • Run optimal synthesis : {prog} {ext_name} build -b <budget>")
+        print(f"  • View domain CLI help  : {prog} {ext_name} --help")
+        print(f"  • Explore modes         : {prog} {ext_name} modes\n")
+    else:
+        print("\nQuick Start:")
+        print(f"  • Inspect active modules : {prog} modules")
+        print(f"  • View module config     : {prog} module config {target}\n")
+
+
 def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> None:
+    prog = get_cli_prog()
     parser = argparse.ArgumentParser(
-        prog="main.py module",
+        prog=f"{prog} module",
         description="Hardware Market Intelligence Module Marketplace & Package Manager",
     )
     subparsers = parser.add_subparsers(dest="subcommand", help="Module marketplace action")
@@ -55,6 +94,12 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
     inst_p.add_argument("-f", "--force", action="store_true", help="Force overwrite if already installed")
     inst_p.add_argument("--registry", help="Custom registry index URL or directory path")
 
+    # Install bundle (convenience subcommand)
+    inst_b_p = subparsers.add_parser("install-bundle", help="Install a curated bundle of modules from the registry")
+    inst_b_p.add_argument("target", help="Bundle name (e.g. pc-starter, photo-kit)")
+    inst_b_p.add_argument("-f", "--force", action="store_true", help="Force overwrite if already installed")
+    inst_b_p.add_argument("--registry", help="Custom registry index URL or directory path")
+
     # Update
     up_p = subparsers.add_parser("update", help="Update installed modules to the latest version")
     up_p.add_argument("name", nargs="?", default=None, help="Specific module name to update")
@@ -62,7 +107,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
     up_p.add_argument("--registry", help="Custom registry index URL or directory path")
 
     # Remove
-    rem_p = subparsers.add_parser("remove", help="Uninstall and remove a module")
+    rem_p = subparsers.add_parser("remove", aliases=["uninstall"], help="Uninstall and remove a module")
     rem_p.add_argument("name", help="Module name to remove")
     rem_p.add_argument("-f", "--force", action="store_true", help="Force removal even if other modules depend on it")
 
@@ -180,7 +225,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
                 print(f"  │ {mod_name:<{w_name}} │ {mod_domain:<{w_domain}} │ {mod_subsys:<{w_subsys}} │ {badge:<{w_trust}} │ {status_str:<{w_status}} │")
             print(bot)
 
-        print("\nInstall with: python3 main.py module install <name>\n")
+        print(f"\nInstall with: {get_cli_prog()} module install <name>\n")
 
     elif parsed.subcommand == "info":
         info = client.info(parsed.name)
@@ -222,42 +267,11 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
         print()
 
     elif parsed.subcommand == "install":
-        print(f"Installing '{parsed.target}'...")
-        ok, msg = client.install(parsed.target, force=parsed.force)
-        if ok:
-            print(f"[OK] {msg}")
-            prog = get_cli_prog()
-            # Contextual post-installation instructions
-            target_clean = parsed.target.lower().strip()
-            if target_clean in ("pc", "extension:pc", "domain:pc"):
-                print("\nQuick Start Guide for PC Extension:")
-                print(f"  • Synthesize PC Build under budget : {prog} pc build -b 850")
-                print(f"  • Explore optimization modes       : {prog} pc modes")
-                print(f"  • View PC domain CLI help          : {prog} pc --help")
-                print(f"  • Search individual hardware parts : {prog} pc gpu --help (or cpu, mobo, ram, psu)\n")
-            elif target_clean in ("fishing", "extension:fishing", "domain:fishing"):
-                print("\nQuick Start Guide for Fishing Extension:")
-                print(f"  • Synthesize tackle set under budget : {prog} fishing build -b 150")
-                print(f"  • Explore fishing weight profiles    : {prog} fishing modes")
-                print(f"  • View Fishing domain CLI help       : {prog} fishing --help")
-                print(f"  • Search individual tackle parts     : {prog} fishing rod --help (or reel, line, bait)\n")
-            elif target_clean.startswith("bundle:") or "kit" in target_clean or "starter" in target_clean or "bundle" in msg.lower():
-                print("\nQuick Start Guide for Bundle / Kit:")
-                print(f"  • Inspect newly active modules : {prog} modules")
-                print(f"  • Run combinatorial solver     : {prog} pc build -b 850\n")
-            elif "extension" in msg.lower():
-                ext_name = target_clean.split(":")[-1]
-                print(f"\nQuick Start Guide for '{ext_name}':")
-                print(f"  • Run optimal synthesis : {prog} {ext_name} build -b <budget>")
-                print(f"  • View domain CLI help  : {prog} {ext_name} --help")
-                print(f"  • Explore modes         : {prog} {ext_name} modes\n")
-            else:
-                print("\nQuick Start:")
-                print(f"  • Inspect active modules : {prog} modules")
-                print(f"  • View module config     : {prog} module config {parsed.target}\n")
-        else:
-            print(f"[FAIL] Failed to install '{parsed.target}':\n{msg}", file=sys.stderr)
-            sys.exit(1)
+        _handle_install(client, parsed.target, force=parsed.force)
+
+    elif parsed.subcommand == "install-bundle":
+        bundle_target = parsed.target if parsed.target.startswith("bundle:") else f"bundle:{parsed.target}"
+        _handle_install(client, bundle_target, force=parsed.force)
 
     elif parsed.subcommand == "update":
         results = client.update(name=parsed.name, update_all=parsed.all)
@@ -266,7 +280,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
             icon = "[OK]" if ok else "[FAIL]"
             print(f"  {icon} {mod}: {msg}")
 
-    elif parsed.subcommand == "remove":
+    elif parsed.subcommand in ("remove", "uninstall"):
         ok, msg = client.remove(parsed.name, force=parsed.force)
         if ok:
             print(f"[OK] {msg}")
@@ -350,7 +364,7 @@ def run_marketplace_cli(args: List[str], root_dir: Optional[Path] = None) -> Non
             print(f"\n[OK] {msg}")
             print("\nNext steps:")
             print(f"  1. Edit your new module at:\n     {path}")
-            print(f"  2. Validate security & contract compliance:\n     python main.py module verify {path}")
+            print(f"  2. Validate security & contract compliance:\n     {get_cli_prog()} module verify {path}")
             print("  3. When ready, submit a Pull Request to:\n     https://github.com/knapset-dev/knapset-registry\n")
         else:
             print(f"\n[FAIL] Failed to scaffold module:\n{msg}\n", file=sys.stderr)

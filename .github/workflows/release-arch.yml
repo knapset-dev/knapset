@@ -1,0 +1,57 @@
+name: Build Arch Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Optional git tag/ref to package (defaults to current ref)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  arch-package:
+    name: Build .pkg.tar.zst (Arch Linux)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel pacman-contrib git python zstd github-cli
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Build Arch package as non-root user
+        run: |
+          useradd -m builder
+          mkdir -p /tmp/archbuild
+          cp packaging/aur/PKGBUILD /tmp/archbuild/PKGBUILD
+          chown -R builder:builder /tmp/archbuild
+          su - builder -c "cd /tmp/archbuild && updpkgsums && makepkg -s --noconfirm"
+          cd /tmp/archbuild
+          PKG_FILE=$(ls -1 knapset-*.pkg.tar.zst | head -n 1)
+          sha256sum "$PKG_FILE" > "${PKG_FILE}.sha256"
+          mkdir -p "${GITHUB_WORKSPACE}/arch-dist"
+          cp "$PKG_FILE" "${PKG_FILE}.sha256" "${GITHUB_WORKSPACE}/arch-dist/"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: arch-dist/*
+
+      - name: Attach assets to GitHub Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.event.release.tag_name }}" arch-dist/* --clobber

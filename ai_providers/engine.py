@@ -822,15 +822,18 @@ def print_providers_table():
         det_str = f"{st['detail'][:widths[4]]:<{widths[4]}}"
         print(f"│ {prov_str} │ {kind_str} │ {status_col} │ {mod_str} │ {det_str} │")
     print(bot)
+    from app_paths import get_cli_prog
+
+    prog = get_cli_prog()
     print(f"\nAuto-Selected Active Provider: \033[1m{auto_client.display_name}\033[0m")
     print("\nUsage Examples:")
-    print("  python main.py gpu --ai-provider gemini --ai-model gemini-2.5-flash")
-    print("  python main.py gpu --ai-provider groq --ai-model llama-3.3-70b-versatile")
-    print("  python main.py gpu --ai-provider openai --ai-model gpt-4o-mini")
-    print("  python main.py gpu --ai-provider anthropic --ai-model claude-3-5-haiku-latest")
-    print("  python main.py gpu --ai-provider ollama --ai-model qwen2.5:7b")
-    print("  python main.py gpu --ai-provider agy --ai-model claude-sonnet-5-5-low")
-    print("  python main.py providers --test auto\n")
+    print(f"  {prog} <domain> --ai-provider gemini --ai-model gemini-2.5-flash")
+    print(f"  {prog} <domain> --ai-provider groq --ai-model llama-3.3-70b-versatile")
+    print(f"  {prog} <domain> --ai-provider openai --ai-model gpt-4o-mini")
+    print(f"  {prog} <domain> --ai-provider anthropic --ai-model claude-3-5-haiku-latest")
+    print(f"  {prog} <domain> --ai-provider ollama --ai-model qwen2.5:7b")
+    print(f"  {prog} <domain> --ai-provider agy --ai-model claude-sonnet-5-5-low")
+    print(f"  {prog} providers --test auto\n")
 
 
 def main(argv: Optional[List[str]] = None) -> None:

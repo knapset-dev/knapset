@@ -134,11 +134,31 @@ class MarketplaceClient:
         root_dir: Optional[Union[str, Path]] = None,
     ):
         self.root_dir = Path(root_dir or get_plugins_root()).resolve()
-        self.registry_source = registry_url_or_path or OFFICIAL_REMOTE_REGISTRY_URL
+        env_registry = os.environ.get("KNAPSET_REGISTRY_URL", "").strip()
+        self.registry_source = registry_url_or_path or env_registry or OFFICIAL_REMOTE_REGISTRY_URL
         self.data_dir = (self.root_dir / "data") if root_dir is not None else get_data_dir()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.installed_file = self.data_dir / "installed_modules.json"
         self.cache_file = self.data_dir / "marketplace_cache.json"
+
+    def _local_registry_path(self) -> Optional[Path]:
+        """Resolves `registry_source` to a local filesystem Path when it is not HTTP(S)."""
+        src = str(self.registry_source or "").strip()
+        if not src or src.startswith(("http://", "https://")):
+            return None
+        if src.startswith("file://"):
+            parsed = urllib.parse.urlparse(src)
+            src = urllib.request.url2pathname(parsed.path)
+        return Path(src).expanduser()
+
+    def _local_registry_base(self) -> Optional[Path]:
+        """Returns the base directory for resolving relative module payloads from a local registry."""
+        p = self._local_registry_path()
+        if p is None:
+            return None
+        if p.is_file() or p.suffix.lower() == ".json":
+            return p.parent
+        return p
 
     def _read_installed_records(self) -> Dict[str, InstalledModuleRecord]:
         if not self.installed_file.exists():
@@ -160,15 +180,18 @@ class MarketplaceClient:
         _atomic_write_text(self.installed_file, json.dumps(data, indent=2, ensure_ascii=False))
 
     def fetch_registry_index(self, force_refresh: bool = False) -> Dict[str, Any]:
-        """Fetches the registry index from URL or local directory with caching."""
-        # 1. Local directory check
-        source_path = Path(self.registry_source)
-        if source_path.is_dir():
-            index_file = source_path / "registry.json"
-            if index_file.is_file():
-                return json.loads(index_file.read_text(encoding="utf-8"))
-            # Build on the fly from directory if registry.json missing
-            return self._build_index_from_local_dir(source_path)
+        """Fetches the registry index from URL or local directory/file with caching."""
+        # 1. Local file or directory check (including file:// URLs)
+        source_path = self._local_registry_path()
+        if source_path is not None:
+            if source_path.is_file():
+                return json.loads(source_path.read_text(encoding="utf-8"))
+            if source_path.is_dir():
+                index_file = source_path / "registry.json"
+                if index_file.is_file():
+                    return json.loads(index_file.read_text(encoding="utf-8"))
+                # Build on the fly from directory if registry.json missing
+                return self._build_index_from_local_dir(source_path)
 
         # 2. Remote URL (http / https)
         if self.registry_source.startswith(("http://", "https://")):
@@ -356,9 +379,10 @@ class MarketplaceClient:
                 # Fallback to local candidates if offline
                 pass
 
-        # 3. Local path resolution against registry_source or DEFAULT_REGISTRY_DIR or root_dir
+        # 3. Local path resolution against local registry base or DEFAULT_REGISTRY_DIR or root_dir
+        local_base = self._local_registry_base()
         candidate_paths = [
-            Path(self.registry_source) / relative_or_absolute_url if not self.registry_source.startswith(("http://", "https://")) else None,
+            local_base / relative_or_absolute_url if local_base else None,
             DEFAULT_REGISTRY_DIR / relative_or_absolute_url,
             self.root_dir / relative_or_absolute_url,
             Path(relative_or_absolute_url),
@@ -376,8 +400,30 @@ class MarketplaceClient:
         files: Optional[List[str]] = None,
     ) -> None:
         """Copies a directory resource from local registry or downloads its file manifest from a remote registry."""
+        if files and self.registry_source.startswith(("http://", "https://")):
+            try:
+                if dest_dir.exists():
+                    shutil.rmtree(dest_dir)
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                rel_base = relative_or_absolute_url.strip("/")
+                for rel_file in files:
+                    clean_rel = rel_file.lstrip("/")
+                    target_file = (dest_dir / clean_rel).resolve()
+                    if not target_file.is_relative_to(dest_dir.resolve()):
+                        shutil.rmtree(dest_dir, ignore_errors=True)
+                        raise ValueError(f"Security violation: package file escapes destination root: '{rel_file}'")
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+                    data_bytes = self._resolve_resource_bytes(f"{rel_base}/{clean_rel}")
+                    target_file.write_bytes(data_bytes)
+                return
+            except ValueError:
+                raise
+            except Exception:
+                shutil.rmtree(dest_dir, ignore_errors=True)
+
+        local_base = self._local_registry_base()
         candidate_paths = [
-            Path(self.registry_source) / relative_or_absolute_url if not self.registry_source.startswith(("http://", "https://")) else None,
+            local_base / relative_or_absolute_url if local_base else None,
             locate_registry_dir() / relative_or_absolute_url,
             DEFAULT_REGISTRY_DIR / relative_or_absolute_url,
             self.root_dir / relative_or_absolute_url,
@@ -403,22 +449,6 @@ class MarketplaceClient:
                         shutil.rmtree(dest_dir, ignore_errors=True)
                         raise ValueError(f"Security violation: package contents escape root: '{item.name}'")
                 return
-
-        if files and self.registry_source.startswith(("http://", "https://")):
-            if dest_dir.exists():
-                shutil.rmtree(dest_dir)
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            rel_base = relative_or_absolute_url.strip("/")
-            for rel_file in files:
-                clean_rel = rel_file.lstrip("/")
-                target_file = (dest_dir / clean_rel).resolve()
-                if not target_file.is_relative_to(dest_dir.resolve()):
-                    shutil.rmtree(dest_dir, ignore_errors=True)
-                    raise ValueError(f"Security violation: package file escapes destination root: '{rel_file}'")
-                target_file.parent.mkdir(parents=True, exist_ok=True)
-                data_bytes = self._resolve_resource_bytes(f"{rel_base}/{clean_rel}")
-                target_file.write_bytes(data_bytes)
-            return
 
         raise FileNotFoundError(f"Could not locate module directory for '{relative_or_absolute_url}'")
 

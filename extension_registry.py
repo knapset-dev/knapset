@@ -310,8 +310,10 @@ class JsonBlueprintDomainExtension(BaseDomainExtension):
         args = list(argv)
         sec_ids = self._layout.section_ids()
         if not args or args[0] in ("-h", "--help", "help"):
+            from app_paths import get_cli_prog
+
             print(f"\n{self.title} ({self.domain_id}) — Declarative Blueprint CLI\n")
-            print(f"Usage: python main.py {self.domain_id} <command> [options]\n")
+            print(f"Usage: {get_cli_prog()} {self.domain_id} <command> [options]\n")
             print("Commands:")
             print("  build    Synthesize optimal sets under budget")
             for s in self._layout.sections:
@@ -329,7 +331,9 @@ class JsonBlueprintDomainExtension(BaseDomainExtension):
         )
 
         if cmd == "build":
-            parser = argparse.ArgumentParser(prog=f"main.py {self.domain_id} build")
+            from app_paths import get_cli_prog
+
+            parser = argparse.ArgumentParser(prog=f"{get_cli_prog()} {self.domain_id} build")
             parser.add_argument("--budget", "-b", type=float, default=def_b)
             parser.add_argument("--mode", "-M", type=str, default=self._weights_reg.default_profile_name)
             parser.add_argument("--top", "-n", type=int, default=5)

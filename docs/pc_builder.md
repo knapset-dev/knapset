@@ -47,7 +47,7 @@ The builder supports 15+ Pareto-weighted optimization profiles:
 
 ## 3. CLI Quickstart & Verified Examples
 
-Execute the PC builder from the root CLI using the `pc` domain prefix (budgets default to `USDT`; pass `--currency UAH` or `--currency EUR` to work in local currencies):
+Execute the PC builder from the root CLI using the `pc` domain prefix (when installed globally, `ks` / `knapset` can be used anywhere in place of `python3 main.py`; budgets default to `USDT`; pass `--currency UAH` or `--currency EUR` to work in local currencies):
 
 ### 3.1. Standard Budget Synthesis
 Synthesize the 5 best balanced builds for 850 USDT:

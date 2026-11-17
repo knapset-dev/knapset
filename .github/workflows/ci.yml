@@ -58,7 +58,7 @@ jobs:
         working-directory: knapset
         run: |
           python main.py --help
-          python main.py pc build --quiet
+          python main.py --version
           python main.py template build -b 1000
           python main.py domains --inspect template
           python main.py template modes
@@ -72,3 +72,21 @@ jobs:
           python main.py serve --help
           python main.py fx
           python main.py watch --domain template --no-refresh --dry-run
+
+      - name: Validate Isolated Extension Install & Wheel Build
+        working-directory: knapset
+        run: |
+          TMP_KNAPSET_HOME="$(mktemp -d)"
+          export KNAPSET_HOME="$TMP_KNAPSET_HOME"
+          export KNAPSET_REGISTRY_URL="file://${{ github.workspace }}/knapset-registry/registry.json"
+          python main.py module install pc
+          python main.py pc build --quiet
+          python main.py module uninstall pc
+          rm -rf "$TMP_KNAPSET_HOME"
+          python -m pip install --quiet build
+          python -m build
+          python -m venv /tmp/knapset-wheel-venv
+          /tmp/knapset-wheel-venv/bin/pip install --quiet --no-deps dist/*.whl
+          /tmp/knapset-wheel-venv/bin/ks --version
+          /tmp/knapset-wheel-venv/bin/ks template build -b 1000
+          rm -rf /tmp/knapset-wheel-venv dist build *.egg-info

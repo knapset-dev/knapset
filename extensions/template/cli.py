@@ -5,6 +5,7 @@ Template Domain CLI.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import sys
 import time
 from typing import List, Optional
@@ -17,9 +18,14 @@ from extensions.template.weights import create_template_scorer, create_template_
 from set_synthesizer import export_domain_sets, print_domain_sets
 
 
+def get_cli_prog() -> str:
+    exe = Path(sys.argv[0]).name if sys.argv else ""
+    return exe if exe in ("ks", "knapset") else "python3 main.py"
+
+
 def print_help() -> None:
     print("\nTemplate Domain Extension CLI\n")
-    print("Usage: python main.py template <command> [options]\n")
+    print(f"Usage: {get_cli_prog()} template <command> [options]\n")
     print("Commands:")
     print("  build    Synthesize optimal sets under budget (--budget, --mode, --min-new-ratio, --export)")
     print("  search   Search template candidates (--section, --query, --min-price, --max-price, --mode)")
@@ -30,7 +36,7 @@ def print_help() -> None:
 
 
 def _run_search_section(section_id: str, argv: List[str]) -> None:
-    parser = argparse.ArgumentParser(prog=f"main.py template {section_id}")
+    parser = argparse.ArgumentParser(prog=f"{get_cli_prog()} template {section_id}")
     parser.add_argument("--query", "-q", type=str, default=None)
     parser.add_argument("--min-price", type=float, default=None)
     parser.add_argument("--max-price", type=float, default=None)
@@ -52,7 +58,7 @@ def _run_search_section(section_id: str, argv: List[str]) -> None:
 
 
 def _run_modes(argv: List[str]) -> None:
-    parser = argparse.ArgumentParser(prog="main.py template modes")
+    parser = argparse.ArgumentParser(prog=f"{get_cli_prog()} template modes")
     parser.add_argument("--inspect", "-i", type=str, default=None, help="Inspect weights of a specific mode")
     args = parser.parse_args(argv)
 
@@ -74,7 +80,7 @@ def _run_modes(argv: List[str]) -> None:
 def _run_build(argv: List[str]) -> None:
     active_curr = get_active_currency()
     def_budget = 250.0 if canonical_currency(active_curr) in ("USDT", "USD") else convert_currency(250.0, "USDT", active_curr)
-    parser = argparse.ArgumentParser(prog="main.py template build", description="Synthesize template domain sets")
+    parser = argparse.ArgumentParser(prog=f"{get_cli_prog()} template build", description="Synthesize template domain sets")
     parser.add_argument("--budget", "-b", type=float, default=def_budget)
     parser.add_argument("--mode", "-M", type=str, default="balanced")
     parser.add_argument("--top", "-n", type=int, default=3)

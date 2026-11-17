@@ -876,8 +876,10 @@ class KnapsetHTTPRequestHandler(BaseHTTPRequestHandler):
 
 
 def run_web_server(argv: Optional[List[str]] = None) -> None:
+    from app_paths import get_cli_prog
+
     parser = argparse.ArgumentParser(
-        prog="main.py serve",
+        prog=f"{get_cli_prog()} serve",
         description="Start the built-in Knapset Web Dashboard & REST API Server (100% Python stdlib).",
     )
     parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")

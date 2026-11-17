@@ -6,13 +6,43 @@ Verifies that <domain> search, <domain> modes, and section subcommands execute c
 from __future__ import annotations
 
 import io
+import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
 import main
 
 
 class TestCliSmoke(unittest.TestCase):
+    def test_dynamic_cli_prog_in_subparser_help(self):
+        buf = io.StringIO()
+        with patch.object(sys, "argv", ["/usr/bin/ks", "module", "--help"]), redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as cm:
+                main.main(["module", "--help"])
+            self.assertEqual(cm.exception.code, 0)
+        self.assertIn("usage: ks module", buf.getvalue())
+
+    def test_module_install_bundle_and_uninstall_aliases(self):
+        from marketplace.client import locate_registry_dir
+
+        reg_path = str(locate_registry_dir() / "registry.json")
+        with tempfile.TemporaryDirectory(prefix="ks_bundle_cli_") as tmp_dir:
+            env = {"KNAPSET_HOME": tmp_dir, "KNAPSET_REGISTRY_URL": f"file://{reg_path}"}
+            with patch.dict("os.environ", env):
+                buf_inst = io.StringIO()
+                with redirect_stdout(buf_inst):
+                    main.main(["module", "install-bundle", "photo-kit"])
+                self.assertIn("Installed bundle 'photo-kit'", buf_inst.getvalue())
+                self.assertTrue((Path(tmp_dir) / "info_providers/modules/sample_provider.py").is_file())
+
+                buf_rm = io.StringIO()
+                with redirect_stdout(buf_rm):
+                    main.main(["module", "uninstall", "sample_provider"])
+                self.assertIn("successfully removed", buf_rm.getvalue())
+                self.assertFalse((Path(tmp_dir) / "info_providers/modules/sample_provider.py").exists())
     def test_template_modes(self):
         buf = io.StringIO()
         with redirect_stdout(buf):

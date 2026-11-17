@@ -439,8 +439,10 @@ def handle_jsonrpc_message(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 
 def run_mcp_stdio_server(argv: Optional[List[str]] = None) -> None:
+    from app_paths import get_cli_prog
+
     parser = argparse.ArgumentParser(
-        prog="main.py mcp",
+        prog=f"{get_cli_prog()} mcp",
         description="Run Knapset Model Context Protocol (MCP) JSON-RPC 2.0 Server over stdio.",
     )
     parser.add_argument(
