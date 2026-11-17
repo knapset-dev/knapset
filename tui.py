@@ -1418,7 +1418,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
         try:
             wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
             wheel_dn = getattr(curses, "BUTTON5_PRESSED", 0)
-            curses.mousemask(curses.BUTTON1_PRESSED | wheel_up | wheel_dn)
+            btn1_rel = getattr(curses, "BUTTON1_RELEASED", 0)
+            curses.mousemask(curses.BUTTON1_PRESSED | btn1_rel | wheel_up | wheel_dn)
             if hasattr(curses, "mouseinterval"):
                 curses.mouseinterval(0)
         except Exception:
@@ -1458,6 +1459,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
         last_event_at = 0.0
         last_apply_at = 0.0
         hold_steps = 0
+        mouse_hold: Optional[List[Any]] = None
 
         def _nudge_weight(idx: int, sign: int, allow_accel: bool = True) -> None:
             nonlocal last_step_idx, last_step_sign, last_event_at, last_apply_at, hold_steps
@@ -1535,6 +1537,23 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     # A newer solve_gen arrived while previous worker ran; run the latest snapshot now
                     solve_pending = True
                     solve_due_at = time.monotonic()
+
+            if mouse_hold is not None:
+                m_idx, m_sign, m_pressed, m_last, m_steps = mouse_hold
+                now_m = time.monotonic()
+                if (now_m - m_pressed) >= 0.14 and (now_m - m_last) >= _compute_hold_interval(m_steps):
+                    if 0 <= m_idx < len(state.weights):
+                        old_v = state.weights[m_idx][1]
+                        state.adjust_weight(m_idx, m_sign * 0.05, auto_solve=False)
+                        if state.weights[m_idx][1] != old_v:
+                            mouse_hold[3] = now_m
+                            mouse_hold[4] = m_steps + 1
+                            _schedule_solve()
+                            needs_redraw = True
+                        else:
+                            mouse_hold = None
+                    else:
+                        mouse_hold = None
 
             if solve_pending and not worker_running and time.monotonic() >= solve_due_at:
                 _start_async_solve()
@@ -1616,10 +1635,15 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
                 stdscr.refresh()
 
-            stdscr.timeout(40 if (solve_pending or worker_running) else -1)
+            if mouse_hold is not None:
+                stdscr.timeout(15)
+            else:
+                stdscr.timeout(40 if (solve_pending or worker_running) else -1)
             ch = stdscr.getch()
             if ch == curses.ERR:
                 continue
+            if ch != curses.KEY_MOUSE:
+                mouse_hold = None
             needs_redraw = True
             if ch == curses.KEY_RESIZE:
                 force_clear = True
@@ -1671,7 +1695,14 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     _, mx, my, _, bstate = curses.getmouse()
                     wheel_up = getattr(curses, "BUTTON4_PRESSED", 0)
                     wheel_dn = getattr(curses, "BUTTON5_PRESSED", 0)
+                    btn1_rel = getattr(curses, "BUTTON1_RELEASED", 0)
+                    btn1_press = getattr(curses, "BUTTON1_PRESSED", 0)
+                    btn1_click = getattr(curses, "BUTTON1_CLICKED", 0)
+                    if btn1_rel and (bstate & btn1_rel):
+                        mouse_hold = None
+                        continue
                     if wheel_up and (bstate & wheel_up):
+                        mouse_hold = None
                         if focus_results or mx >= right_x:
                             right_scroll = max(0, right_scroll - 2)
                         else:
@@ -1682,6 +1713,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                                 left_cursor = nxt
                         continue
                     if wheel_dn and (bstate & wheel_dn):
+                        mouse_hold = None
                         if focus_results or mx >= right_x:
                             right_scroll = min(max_r_scroll, right_scroll + 2)
                         else:
@@ -1691,7 +1723,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             if ws_items[nxt].kind != "header":
                                 left_cursor = nxt
                         continue
+                    if not (bstate & (btn1_press | btn1_click)):
+                        mouse_hold = None
+                        continue
 
+                    mouse_hold = None
                     if pane_y < my < pane_y + pane_h - 1 and 1 <= mx < left_w - 1:
                         focus_results = False
                         clicked_idx = left_scroll + (my - pane_y - 1)
@@ -1701,6 +1737,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             if it.kind == "weight":
                                 if 15 <= mx <= 18:
                                     _nudge_weight(it.index, -1, allow_accel=False)
+                                    if btn1_press and (bstate & btn1_press):
+                                        now_p = time.monotonic()
+                                        mouse_hold = [it.index, -1, now_p, now_p, 0]
                                 elif 19 <= mx <= 30:
                                     # Click directly along 10-symbol [██████████] bar in 5% steps (0.00 .. 1.00)
                                     frac = max(0.0, min(1.0, (mx - 19) / 10.0))
@@ -1712,6 +1751,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                                     _schedule_solve()
                                 elif 31 <= mx <= 34:
                                     _nudge_weight(it.index, 1, allow_accel=False)
+                                    if btn1_press and (bstate & btn1_press):
+                                        now_p = time.monotonic()
+                                        mouse_hold = [it.index, 1, now_p, now_p, 0]
                                 elif mx >= 43:
                                     state.toggle_weight_direction(it.index, auto_solve=False)
                                     _schedule_solve()
