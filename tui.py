@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
+import queue
 import sys
+import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -577,48 +579,62 @@ class TuiSessionState:
         nxt = names[(idx + 1) % len(names)]
         self.switch_profile(nxt)
 
+    def capture_solve_inputs(self) -> Dict[str, Any]:
+        """Captures an immutable-safe snapshot of solver inputs for background worker threads."""
+        return {
+            "mode": self.mode,
+            "slot_pools": dict(self.slot_pools),
+            "weight_map": self._signed_weight_map(),
+            "limits": list(self.limits),
+            "rules": list(self.rules),
+            "formulas": list(self.formulas),
+            "where": list(self.where),
+            "top_n": self.top_n,
+        }
+
+    @staticmethod
+    def run_solve_snapshot(snap: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        slot_pools = snap["slot_pools"]
+        if not slot_pools:
+            return [], {}
+        mode = snap["mode"]
+        if mode == "rank":
+            first_rows = next(iter(slot_pools.values()), [])
+            ranked, meta = solve_rank(
+                rows=first_rows,
+                weights=snap["weight_map"],
+                formulas=snap["formulas"],
+                where=snap["where"],
+                top_n=max(10, snap["top_n"]),
+            )
+            return [r.to_dict() for r in ranked], meta
+        if mode == "basket":
+            first_rows = next(iter(slot_pools.values()), [])
+            sols, meta = solve_basket(
+                rows=first_rows,
+                weights=snap["weight_map"],
+                limits=snap["limits"],
+                formulas=snap["formulas"],
+                where=snap["where"],
+                top_n=snap["top_n"],
+            )
+            return [s.to_dict() for s in sols], meta
+        sols, meta = solve_sets(
+            slot_pools=slot_pools,
+            weights=snap["weight_map"],
+            limits=snap["limits"],
+            rules=snap["rules"],
+            formulas=snap["formulas"],
+            where=snap["where"],
+            top_n=snap["top_n"],
+        )
+        return [s.to_dict() for s in sols], meta
+
     def re_solve(self) -> None:
         try:
-            weight_map = self._signed_weight_map()
-            if not self.slot_pools:
-                self.results = []
-                self.meta = {}
-                return
-            if self.mode == "rank":
-                first_rows = next(iter(self.slot_pools.values()), [])
-                ranked, meta = solve_rank(
-                    rows=first_rows,
-                    weights=weight_map,
-                    formulas=self.formulas,
-                    where=self.where,
-                    top_n=max(10, self.top_n),
-                )
-                self.results = [r.to_dict() for r in ranked]
-                self.meta = meta
-            elif self.mode == "basket":
-                first_rows = next(iter(self.slot_pools.values()), [])
-                sols, meta = solve_basket(
-                    rows=first_rows,
-                    weights=weight_map,
-                    limits=self.limits,
-                    formulas=self.formulas,
-                    where=self.where,
-                    top_n=self.top_n,
-                )
-                self.results = [s.to_dict() for s in sols]
-                self.meta = meta
-            else:
-                sols, meta = solve_sets(
-                    slot_pools=self.slot_pools,
-                    weights=weight_map,
-                    limits=self.limits,
-                    rules=self.rules,
-                    formulas=self.formulas,
-                    where=self.where,
-                    top_n=self.top_n,
-                )
-                self.results = [s.to_dict() for s in sols]
-                self.meta = meta
+            results, meta = self.run_solve_snapshot(self.capture_solve_inputs())
+            self.results = results
+            self.meta = meta
         except Exception as exc:
             self.status_message = f"Check expression: {exc}"
 
@@ -1411,87 +1427,147 @@ def run_curses_tui(state: TuiSessionState) -> None:
         right_scroll = 0
         solve_pending = False
         solve_due_at = 0.0
-        DEBOUNCE_SEC = 0.28
+        solve_gen = 0
+        worker_running = False
+        DEBOUNCE_SEC = 0.45
+        result_queue: queue.SimpleQueue = queue.SimpleQueue()
+        needs_redraw = True
+        cached_res_key: Any = None
+        cached_res_lines: List[str] = []
 
         def _schedule_solve() -> None:
-            nonlocal solve_pending, solve_due_at
+            nonlocal solve_pending, solve_due_at, solve_gen, needs_redraw
+            solve_gen += 1
             solve_pending = True
             solve_due_at = time.monotonic() + DEBOUNCE_SEC
+            needs_redraw = True
+
+        def _start_async_solve() -> None:
+            nonlocal worker_running, solve_pending, needs_redraw
+            solve_pending = False
+            worker_running = True
+            gen = solve_gen
+            snap = state.capture_solve_inputs()
+            needs_redraw = True
+
+            def _worker() -> None:
+                try:
+                    res, meta = TuiSessionState.run_solve_snapshot(snap)
+                    result_queue.put((gen, res, meta, None))
+                except Exception as exc:
+                    result_queue.put((gen, None, None, str(exc)))
+
+            threading.Thread(target=_worker, daemon=True).start()
 
         def _flush_pending_solve() -> None:
-            nonlocal solve_pending
-            if solve_pending:
-                state.re_solve()
+            nonlocal solve_pending, worker_running, solve_gen, needs_redraw
+            if solve_pending or worker_running:
+                solve_gen += 1
                 solve_pending = False
+                worker_running = False
+                # Drain any stale queued worker replies
+                while not result_queue.empty():
+                    try:
+                        result_queue.get_nowait()
+                    except Exception:
+                        break
+                state.re_solve()
+                needs_redraw = True
 
         while True:
+            # Pop completed background solve results cleanly without blocking UI
+            while not result_queue.empty():
+                try:
+                    done_gen, res, meta, err = result_queue.get_nowait()
+                except Exception:
+                    break
+                if done_gen == solve_gen:
+                    worker_running = False
+                    if err is not None:
+                        state.status_message = f"Check expression: {err}"
+                    else:
+                        state.results = res or []
+                        state.meta = meta or {}
+                    needs_redraw = True
+
             if solve_pending and time.monotonic() >= solve_due_at:
-                _flush_pending_solve()
+                _start_async_solve()
 
-            stdscr.erase()
-            h, w = stdscr.getmaxyx()
-            left_w = max(38, min(62, int(w * 0.46)))
-            right_x = left_w + 1
-            right_w = max(24, w - right_x)
+            if needs_redraw:
+                needs_redraw = False
+                stdscr.erase()
+                h, w = stdscr.getmaxyx()
+                left_w = max(38, min(62, int(w * 0.46)))
+                right_x = left_w + 1
+                right_w = max(24, w - right_x)
 
-            dirty = "*" if state.dirty else ""
-            sync_tag = " │ ⏳ solving..." if solve_pending else ""
-            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}{sync_tag}"
-            hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
-            stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
-            if w > len(hdr_left) + len(hdr_right) + 2:
-                stdscr.addnstr(0, w - len(hdr_right) - 1, hdr_right, len(hdr_right), curses.A_DIM)
+                dirty = "*" if state.dirty else ""
+                if solve_pending:
+                    sync_tag = " │ ⏳ pending..."
+                elif worker_running:
+                    sync_tag = " │ ⏳ solving..."
+                else:
+                    sync_tag = ""
+                hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}{sync_tag}"
+                hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
+                stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
+                if w > len(hdr_left) + len(hdr_right) + 2:
+                    stdscr.addnstr(0, w - len(hdr_right) - 1, hdr_right, len(hdr_right), curses.A_DIM)
 
-            pane_y = 1
-            pane_h = max(6, h - 3)
-            inner_h = pane_h - 2
+                pane_y = 1
+                pane_h = max(6, h - 3)
+                inner_h = pane_h - 2
 
-            _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Workspace Controls", active=not focus_results)
-            ws_items = _build_workspace_items(state)
-            left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
-            if ws_items and ws_items[left_cursor].kind == "header" and left_cursor + 1 < len(ws_items):
-                left_cursor += 1
-            if left_cursor < left_scroll:
-                left_scroll = left_cursor
-            elif left_cursor >= left_scroll + inner_h:
-                left_scroll = left_cursor - inner_h + 1
+                _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Workspace Controls", active=not focus_results)
+                ws_items = _build_workspace_items(state)
+                left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
+                if ws_items and ws_items[left_cursor].kind == "header" and left_cursor + 1 < len(ws_items):
+                    left_cursor += 1
+                if left_cursor < left_scroll:
+                    left_scroll = left_cursor
+                elif left_cursor >= left_scroll + inner_h:
+                    left_scroll = left_cursor - inner_h + 1
 
-            for r in range(inner_h):
-                idx = left_scroll + r
-                if idx >= len(ws_items):
-                    break
-                it = ws_items[idx]
-                selected = (not focus_results) and (idx == left_cursor)
-                marker = "▸" if selected else " "
-                raw_lbl = it.label[1:] if it.label.startswith(" ") else it.label
-                attr = _tone_attr(it.tone, selected=selected)
-                if selected and getattr(curses, "COLORS", 0) >= 256:
-                    attr = curses.color_pair(C_SEL) | curses.A_BOLD
-                line_text = f"{marker}{raw_lbl}".ljust(left_w - 3)[: left_w - 3]
-                stdscr.addnstr(pane_y + 1 + r, 2, line_text, left_w - 3, attr)
+                for r in range(inner_h):
+                    idx = left_scroll + r
+                    if idx >= len(ws_items):
+                        break
+                    it = ws_items[idx]
+                    selected = (not focus_results) and (idx == left_cursor)
+                    marker = "▸" if selected else " "
+                    raw_lbl = it.label[1:] if it.label.startswith(" ") else it.label
+                    attr = _tone_attr(it.tone, selected=selected)
+                    if selected and getattr(curses, "COLORS", 0) >= 256:
+                        attr = curses.color_pair(C_SEL) | curses.A_BOLD
+                    line_text = f"{marker}{raw_lbl}".ljust(left_w - 3)[: left_w - 3]
+                    stdscr.addnstr(pane_y + 1 + r, 2, line_text, left_w - 3, attr)
 
-            ex_tag = " · Explain ON" if state.explain else ""
-            _draw_box(stdscr, pane_y, right_x, pane_h, right_w, title=f"Top Solutions ({state.mode}){ex_tag}", active=focus_results)
-            res_lines = _render_result_lines(state, right_w - 3)
-            max_r_scroll = max(0, len(res_lines) - inner_h)
-            right_scroll = max(0, min(right_scroll, max_r_scroll))
-            for r in range(inner_h):
-                r_idx = right_scroll + r
-                if r_idx >= len(res_lines):
-                    break
-                txt = res_lines[r_idx]
-                attr = curses.color_pair(C_GREEN) if txt.startswith("╭─") else (curses.A_DIM if txt.startswith("╰") else curses.A_NORMAL)
-                stdscr.addnstr(pane_y + 1 + r, right_x + 2, txt, right_w - 3, attr)
+                ex_tag = " · Explain ON" if state.explain else ""
+                _draw_box(stdscr, pane_y, right_x, pane_h, right_w, title=f"Top Solutions ({state.mode}){ex_tag}", active=focus_results)
+                res_key = (id(state.results), len(state.results), right_w, state.explain, state.mode)
+                if res_key != cached_res_key:
+                    cached_res_lines = _render_result_lines(state, right_w - 3)
+                    cached_res_key = res_key
+                max_r_scroll = max(0, len(cached_res_lines) - inner_h)
+                right_scroll = max(0, min(right_scroll, max_r_scroll))
+                for r in range(inner_h):
+                    r_idx = right_scroll + r
+                    if r_idx >= len(cached_res_lines):
+                        break
+                    txt = cached_res_lines[r_idx]
+                    attr = curses.color_pair(C_GREEN) if txt.startswith("╭─") else (curses.A_DIM if txt.startswith("╰") else curses.A_NORMAL)
+                    stdscr.addnstr(pane_y + 1 + r, right_x + 2, txt, right_w - 3, attr)
 
-            stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
-            footer = " ↑↓:Nav  ←/→:Weight  Enter:Pick/Hop  d:Del  s:Save Pref  h:Hop Pref  o:DB  p:Preset  /:Cmds  q:Quit "
-            stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
-            stdscr.refresh()
+                stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
+                footer = " ↑↓:Nav  ←/→:Weight  Enter:Pick/Hop  d:Del  s:Save Pref  h:Hop Pref  o:DB  p:Preset  /:Cmds  q:Quit "
+                stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
+                stdscr.refresh()
 
-            stdscr.timeout(50 if solve_pending else -1)
+            stdscr.timeout(40 if (solve_pending or worker_running) else -1)
             ch = stdscr.getch()
             if ch == curses.ERR:
                 continue
+            needs_redraw = True
             if ch in (ord("q"), ord("Q")):
                 break
             if ch == 9:
@@ -1510,11 +1586,15 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 _action_pick_preset(stdscr)
                 continue
             if ch in (ord("h"), ord("H")):
+                solve_gen += 1
                 solve_pending = False
+                worker_running = False
                 state.cycle_profile()
                 continue
             if ch in (ord("m"), ord("M")):
+                solve_gen += 1
                 solve_pending = False
+                worker_running = False
                 state.cycle_mode()
                 continue
             if ch in (ord("e"), ord("E")):
@@ -1562,12 +1642,16 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     nxt -= 1
                 if nxt >= 0 and ws_items[nxt].kind != "header":
                     left_cursor = nxt
+                if solve_pending:
+                    solve_due_at = time.monotonic() + DEBOUNCE_SEC
             elif ch == curses.KEY_DOWN:
                 nxt = left_cursor + 1
                 while nxt < len(ws_items) and ws_items[nxt].kind == "header":
                     nxt += 1
                 if nxt < len(ws_items):
                     left_cursor = nxt
+                if solve_pending:
+                    solve_due_at = time.monotonic() + DEBOUNCE_SEC
             elif ch in (ord("+"), ord("="), curses.KEY_RIGHT):
                 if ws_items[left_cursor].kind == "weight":
                     state.adjust_weight(ws_items[left_cursor].index, 0.1, auto_solve=False)
@@ -1589,6 +1673,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     state.toggle_weight_direction(ws_items[left_cursor].index, auto_solve=False)
                     _schedule_solve()
             elif ch in (ord("d"), ord("D"), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
+                solve_gen += 1
+                solve_pending = False
+                worker_running = False
                 cur = ws_items[left_cursor]
                 if cur.kind == "weight":
                     state.remove_weight(cur.index)
@@ -1612,12 +1699,18 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     state.where.pop(cur.index)
                     state.re_solve()
             elif ch in (ord("a"), ord("A")):
+                solve_gen += 1
+                solve_pending = False
+                worker_running = False
                 cur = ws_items[left_cursor]
                 if cur.kind in ("limit", "rule", "formula", "where") or cur.action_id == "add_constraint":
                     _action_add_constraint(stdscr)
                 else:
                     _action_add_weight(stdscr)
             elif ch in (10, 13, curses.KEY_ENTER):
+                solve_gen += 1
+                solve_pending = False
+                worker_running = False
                 cur = ws_items[left_cursor]
                 if cur.action_id == "add_weight":
                     _action_add_weight(stdscr)
