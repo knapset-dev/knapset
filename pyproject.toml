@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knapset"
-version = "1.0.2"
-description = "Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets."
+version = "2.0.0"
+description = "Zero-dependency database preference, formula, and constraint optimizer (SQLite, CSV, JSON, TUI, Web, MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "knapset-dev", email = "knapset-dev@users.noreply.github.com" }]
@@ -39,38 +39,19 @@ py-modules = [
     "enricher",
     "formula_engine",
     "main",
+    "mcp_server",
     "preset_loader",
     "solver_engine",
+    "tui",
     "v2_cli",
-    "currency",
-    "analyzer_core",
-    "audit_ledger",
-    "ai_inspector",
-    "domain_layout",
-    "domain_weights",
-    "set_synthesizer",
-    "extension_registry",
-    "market_client",
-    "market_store",
-    "mcp_server",
-    "provider_template",
-    "scam_utils",
     "web_server",
-    "watchdog",
 ]
 
 [tool.setuptools.packages.find]
 include = [
     "sources*",
-    "configs*",
-    "extensions*",
     "marketplace*",
-    "component_analyser*",
-    "scam_analyser*",
-    "build_composer*",
-    "info_providers*",
-    "ai_providers*",
 ]
 
 [tool.setuptools.package-data]
-"*" = ["*.json", "configs/*.json", "configs/blueprints/*.json", "data/*.json", "docs/*.md"]
+"*" = ["*.json", "docs/*.md"]

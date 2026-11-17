@@ -29,20 +29,14 @@ class TestAppPaths(unittest.TestCase):
                 self.assertEqual(app_paths.get_config_dir(), home_dir / "configs")
                 self.assertEqual(app_paths.get_plugins_root(), home_dir)
 
-                # Shipped defaults remain reachable when user config dir has no override
-                cfg_file = app_paths.get_config_file("currency.json")
-                self.assertTrue(cfg_file.is_file())
-                self.assertEqual(cfg_file, app_paths.REPO_ROOT / "configs" / "currency.json")
-
-                # User config override takes precedence over shipped defaults
-                user_cfg = home_dir / "configs" / "currency.json"
+                user_cfg = home_dir / "configs" / "settings.json"
                 user_cfg.parent.mkdir(parents=True, exist_ok=True)
-                user_cfg.write_text('{"default_currency": "USD"}', encoding="utf-8")
-                self.assertEqual(app_paths.get_config_file("currency.json"), user_cfg)
+                user_cfg.write_text('{"top_n": 10}', encoding="utf-8")
+                self.assertEqual(app_paths.get_config_file("settings.json"), user_cfg)
 
-                ext_dirs = app_paths.get_subsystem_dirs("extensions")
-                self.assertIn((app_paths.REPO_ROOT / "extensions").resolve(), ext_dirs)
-                self.assertIn((home_dir / "extensions").resolve(), ext_dirs)
+                preset_dirs = app_paths.get_subsystem_dirs("presets")
+                self.assertIn((app_paths.REPO_ROOT / "presets").resolve(), preset_dirs)
+                self.assertIn((home_dir / "presets").resolve(), preset_dirs)
 
     def test_readonly_install_falls_back_to_xdg_dirs(self):
         with tempfile.TemporaryDirectory() as td:

@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ main, master, v2 ]
   pull_request:
-    branches: [ main, master ]
+    branches: [ main, master, v2 ]
 
 jobs:
   test:
@@ -22,12 +22,6 @@ jobs:
         with:
           path: knapset
 
-      - name: Checkout knapset-registry (for extension lifecycle tests)
-        uses: actions/checkout@v7
-        with:
-          repository: knapset-dev/knapset-registry
-          path: knapset-registry
-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v7
         with:
@@ -37,59 +31,25 @@ jobs:
         working-directory: knapset
         run: |
           python -c "import sys; print('Python executable:', sys.executable, sys.version)"
-          # Zero external pip packages required. 100% Python Standard Library.
 
       - name: Run Full Test Suite
         working-directory: knapset
         run: |
-          python -m unittest discover tests
+          python -m unittest discover -s tests -v
 
-      - name: Run Knapsack Combinatorial Stress Benchmark
-        working-directory: knapset
-        run: |
-          python -m unittest tests/test_stress_synthesis.py
-
-      - name: Run End-to-End Extension Lifecycle Test
-        working-directory: knapset
-        run: |
-          python -m unittest tests/test_e2e_extension_lifecycle.py
-
-      - name: Validate CLI & Onboarding Walkthrough
+      - name: Validate CLI Walkthrough & Wheel Build
         working-directory: knapset
         run: |
           python main.py --help
           python main.py --version
-          python main.py template build -b 1000
-          python main.py domains --inspect template
-          python main.py template modes
-          python main.py modules
-          python main.py modules --json
-          python main.py module search
-          python main.py sync --status
-          python main.py deals
-          python main.py ledger
-          python main.py mcp --list-tools
+          python main.py tui --help
           python main.py serve --help
-          python main.py fx
-          python main.py watch --domain template --no-refresh --dry-run
-
-      - name: Validate Isolated Extension Install & Wheel Build
-        working-directory: knapset
-        run: |
-          TMP_KNAPSET_HOME="$(mktemp -d)"
-          export KNAPSET_HOME="$TMP_KNAPSET_HOME"
-          export KNAPSET_REGISTRY_URL="file://${{ github.workspace }}/knapset-registry/registry.json"
-          python main.py module install pc
-          python main.py pc build --no-ai -b 850
-          python main.py module uninstall pc
-          python main.py module install fishing
-          python main.py fishing build -b 150
-          python main.py module uninstall fishing
-          rm -rf "$TMP_KNAPSET_HOME"
+          python main.py mcp --list-tools
+          python main.py preset list --json
           python -m pip install --quiet build
           python -m build
           python -m venv /tmp/knapset-wheel-venv
           /tmp/knapset-wheel-venv/bin/pip install --quiet --no-deps dist/*.whl
           /tmp/knapset-wheel-venv/bin/ks --version
-          /tmp/knapset-wheel-venv/bin/ks template build -b 1000
+          /tmp/knapset-wheel-venv/bin/ks mcp --list-tools
           rm -rf /tmp/knapset-wheel-venv dist build *.egg-info

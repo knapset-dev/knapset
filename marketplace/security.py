@@ -188,25 +188,12 @@ NETWORK_MODULES: Set[str] = {
 
 CORE_ALLOWED_MODULES: Set[str] = {
     "app_paths",
-    "currency",
-    "info_providers",
-    "scam_analyser",
-    "component_analyser",
-    "build_composer",
-    "ai_providers",
+    "enricher",
+    "formula_engine",
     "marketplace",
-    "domain_layout",
-    "domain_weights",
-    "set_synthesizer",
-    "provider_template",
-    "extensions",
-    "analyzer_core",
-    "market_client",
-    "audit_ledger",
-    "ai_inspector",
-    "scam_utils",
-    "extension_registry",
-    "olx_client",
+    "preset_loader",
+    "solver_engine",
+    "sources",
 }
 
 

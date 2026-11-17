@@ -1,7 +1,4 @@
-include LICENSE README.md CONTRIBUTING.md CHANGELOG.md .env.example
+include LICENSE README.md CONTRIBUTING.md CHANGELOG.md
 recursive-include docs *
 recursive-include packaging *
-recursive-include configs *.json
-prune extensions/pc
-prune extensions/fishing
 global-exclude __pycache__ *.py[cod]

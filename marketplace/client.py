@@ -37,7 +37,7 @@ from marketplace.security import SecurityScanner
 
 logger = logging.getLogger(__name__)
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "2.0.0"
 DEFAULT_REGISTRY_CACHE_TTL_SEC = 3600.0
 OFFICIAL_REMOTE_REGISTRY_URL = (
     "https://raw.githubusercontent.com/knapset-dev/knapset-registry/main/registry.json"
