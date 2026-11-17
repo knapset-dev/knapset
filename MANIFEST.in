@@ -1,4 +1,4 @@
-include LICENSE README.md CONTRIBUTING.md .env.example
+include LICENSE README.md CONTRIBUTING.md CHANGELOG.md .env.example
 recursive-include docs *
 recursive-include packaging *
 recursive-include configs *.json

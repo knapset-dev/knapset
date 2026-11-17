@@ -26,7 +26,7 @@ jobs:
           pacman -Syu --noconfirm --needed base-devel pacman-contrib git python zstd github-cli
 
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -44,7 +44,7 @@ jobs:
           cp "$PKG_FILE" "${PKG_FILE}.sha256" "${GITHUB_WORKSPACE}/arch-dist/"
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: arch-package
           path: arch-dist/*

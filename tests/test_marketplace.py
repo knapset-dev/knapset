@@ -20,8 +20,9 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from marketplace.client import MarketplaceClient
+from marketplace.client import MarketplaceClient, locate_registry_dir
 from marketplace.models import (
     BundleManifest,
     InstalledModuleRecord,
@@ -379,8 +380,12 @@ class TestMarketplaceClient(unittest.TestCase):
         ]:
             (self.root_path / sub).mkdir(parents=True, exist_ok=True)
 
-        # Client points to real sample_registry
-        self.client = MarketplaceClient(root_dir=self.root_path)
+        # Client points to local registry checkout for offline determinism
+        reg_file = locate_registry_dir() / "registry.json"
+        self.client = MarketplaceClient(
+            registry_url_or_path=str(reg_file),
+            root_dir=self.root_path,
+        )
 
     def tearDown(self):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
@@ -461,6 +466,69 @@ class TestMarketplaceClient(unittest.TestCase):
         installed = self.client.list_installed()
         names = {m["name"] for m in installed}
         self.assertTrue({"pc", "sample_provider", "reball_detector", "value_composer"}.issubset(names))
+
+    def test_remote_http_registry_fetch_and_directory_download(self):
+        pkg_files = {
+            "__init__.py": b"class RemoteMod:\n    name = 'remote_mod'\n    def analyze(self, item, detail=None, spec=None):\n        return {'risk_score': 0}\n",
+            "rules.json": b'{"ok": true}\n',
+        }
+        h = hashlib.sha256()
+        for rel_name in sorted(pkg_files):
+            h.update(rel_name.encode("utf-8"))
+            h.update(pkg_files[rel_name])
+        dir_sha = h.hexdigest()
+
+        remote_index = {
+            "version": "1.0.0",
+            "modules": [
+                {
+                    "name": "remote_mod",
+                    "subsystem": "scam_analyser",
+                    "domain": "general",
+                    "version": "1.0.0",
+                    "author": "Tester",
+                    "source_type": "directory",
+                    "download_url": "modules/scam_analyser/remote_mod",
+                    "sha256": dir_sha,
+                    "files": ["__init__.py", "rules.json"],
+                }
+            ],
+            "bundles": [],
+        }
+
+        class _FakeResp:
+            def __init__(self, body: bytes):
+                self._body = body
+
+            def read(self) -> bytes:
+                return self._body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(req, timeout=10):
+            url = req.full_url if hasattr(req, "full_url") else str(req)
+            if url == "https://example.test/reg/registry.json":
+                return _FakeResp(json.dumps(remote_index).encode("utf-8"))
+            if url == "https://example.test/reg/modules/scam_analyser/remote_mod/__init__.py":
+                return _FakeResp(pkg_files["__init__.py"])
+            if url == "https://example.test/reg/modules/scam_analyser/remote_mod/rules.json":
+                return _FakeResp(pkg_files["rules.json"])
+            raise AssertionError(f"Unexpected URL fetched: {url}")
+
+        remote_client = MarketplaceClient(
+            registry_url_or_path="https://example.test/reg/registry.json",
+            root_dir=self.root_path,
+        )
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            ok, msg = remote_client.install("remote_mod")
+        self.assertTrue(ok, msg)
+        dest = self.root_path / "scam_analyser/modules/remote_mod"
+        self.assertTrue((dest / "__init__.py").is_file())
+        self.assertTrue((dest / "rules.json").is_file())
 
     def test_shared_canonical_data_domain_resolution(self):
         from market_client import normalize_data_domain
@@ -1026,7 +1094,8 @@ class TestMarketplaceCLIRouting(unittest.TestCase):
             ]:
                 (root / sub).mkdir(parents=True, exist_ok=True)
 
-            client = MarketplaceClient(root_dir=root)
+            reg_file = locate_registry_dir() / "registry.json"
+            client = MarketplaceClient(registry_url_or_path=str(reg_file), root_dir=root)
             client.install("sample_provider")
 
             # 1. Healthy verification

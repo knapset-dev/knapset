@@ -17,10 +17,10 @@ This document describes how the core framework (`knapset`) and extension reposit
 
 ```
 1. Local Dataset Input
-   data/<category>_market_cache.json  -->  main.py sync  -->  data/knapset_market.db (listings, listings_fts, price_history)
+   data/<category>_market_cache.json  -->  ks sync / main.py sync  -->  data/knapset_market.db (listings, listings_fts, price_history)
 
 2. Query & Optimization (knapset + installed domain extension)
-   main.py / web_server.py / mcp_server.py
+   ks / main.py / web_server.py / mcp_server.py
                -->  ExtensionRegistry.get(domain)
                -->  MarketClient / MarketStore (reads SQLite or JSON cache)
                -->  Domain screeners & databases (match model, filter defects, convert currency)

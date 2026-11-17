@@ -18,18 +18,18 @@ jobs:
 
     steps:
       - name: Checkout knapset
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: knapset
 
       - name: Checkout knapset-registry (for extension lifecycle tests)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: knapset-dev/knapset-registry
           path: knapset-registry
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
 

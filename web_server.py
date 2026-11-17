@@ -538,7 +538,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
       const drops = data.drops || [];
       st.textContent = `Indexed: ${(stats.total_listings || 0).toLocaleString()} listings | Multi-point tracked: ${stats.multi_observation_listings || 0} | Price drops found: ${drops.length}`;
       if (!drops.length) {
-        container.innerHTML = '<p style="color:var(--muted);margin-top:12px;">No verified seller price drops recorded yet. Run <code>python3 main.py sync pc</code> periodically to accumulate price history.</p>';
+        container.innerHTML = '<p style="color:var(--muted);margin-top:12px;">No verified seller price drops recorded yet. Run <code>ks sync pc</code> (or <code>python3 main.py sync pc</code>) periodically to accumulate price history.</p>';
         return;
       }
       let rows = drops.map(d => `
