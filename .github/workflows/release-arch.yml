@@ -54,4 +54,4 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.event.release.tag_name }}" arch-dist/* --clobber
+          gh release upload "${{ github.event.release.tag_name }}" -R "${{ github.repository }}" arch-dist/* --clobber
