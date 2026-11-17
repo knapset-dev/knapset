@@ -1324,6 +1324,43 @@ def run_curses_tui(state: TuiSessionState) -> None:
         except Exception as exc:
             state.status_message = f"Invalid expression: {exc}"
 
+    active_theme = load_active_theme()
+
+    def _apply_curses_theme(theme_cfg: ThemeConfig) -> None:
+        if not curses.has_colors():
+            return
+        support_256 = getattr(curses, "COLORS", 0) >= 256
+        role_pairs = (
+            (C_CYAN, "accent", None),
+            (C_GREEN, "positive", None),
+            (C_MIN, "minimize", None),
+            (C_AMBER, "warning", None),
+            (C_DIM, "muted", None),
+            (C_SEL, "selection_fg", "selection_bg"),
+            (C_BAR, "bar_fg", "bar_bg"),
+        )
+        for pair_id, fg_role, bg_role in role_pairs:
+            fg, bg = theme_cfg.resolve_role_pair(fg_role, bg_role, support_256=support_256)
+            try:
+                curses.init_pair(pair_id, fg, bg)
+            except Exception:
+                pass
+
+    def _action_pick_theme(scr: Any) -> None:
+        nonlocal active_theme
+        themes = discover_themes()
+        t_list = list(themes.values())
+        options = [
+            (f"{t.name}{' ★' if t.name == active_theme.name else ''}", f"{t.title} — {t.description}"[:60])
+            for t in t_list
+        ]
+        idx = _modal_picker(scr, "Select Theme (install more via `ks reg install <theme>`)", options)
+        if idx is not None:
+            chosen = t_list[idx]
+            active_theme, _ = set_active_theme(chosen.name)
+            _apply_curses_theme(active_theme)
+            state.status_message = f"Theme: {active_theme.name} ({active_theme.title})"
+
     def _action_command_palette(stdscr: Any) -> None:
         cmds = [
             ("/open", "Open / Replace Main SQLite / CSV / JSON database"),
@@ -1438,43 +1475,6 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 curses.mouseinterval(0)
         except Exception:
             pass
-        active_theme = load_active_theme()
-
-        def _apply_curses_theme(theme_cfg: ThemeConfig) -> None:
-            if not curses.has_colors():
-                return
-            support_256 = getattr(curses, "COLORS", 0) >= 256
-            role_pairs = (
-                (C_CYAN, "accent", None),
-                (C_GREEN, "positive", None),
-                (C_MIN, "minimize", None),
-                (C_AMBER, "warning", None),
-                (C_DIM, "muted", None),
-                (C_SEL, "selection_fg", "selection_bg"),
-                (C_BAR, "bar_fg", "bar_bg"),
-            )
-            for pair_id, fg_role, bg_role in role_pairs:
-                fg, bg = theme_cfg.resolve_role_pair(fg_role, bg_role, support_256=support_256)
-                try:
-                    curses.init_pair(pair_id, fg, bg)
-                except Exception:
-                    pass
-
-        def _action_pick_theme(scr: Any) -> None:
-            nonlocal active_theme
-            themes = discover_themes()
-            t_list = list(themes.values())
-            options = [
-                (f"{t.name}{' ★' if t.name == active_theme.name else ''}", f"{t.title} — {t.description}"[:60])
-                for t in t_list
-            ]
-            idx = _modal_picker(scr, "Select Theme (install more via `ks reg install <theme>`)", options)
-            if idx is not None:
-                chosen = t_list[idx]
-                active_theme, _ = set_active_theme(chosen.name)
-                _apply_curses_theme(active_theme)
-                state.status_message = f"Theme: {active_theme.name} ({active_theme.title})"
-
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
