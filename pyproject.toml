@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knapset"
-version = "1.0.1"
+version = "1.0.2"
 description = "Dependency-free Python framework for analyzing marketplace listings and optimizing compatible, budget-constrained sets."
 readme = "README.md"
 requires-python = ">=3.10"

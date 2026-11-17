@@ -4,12 +4,12 @@ All notable changes to Knapset are documented in this file.
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-17
+
 - Added a 1-hour TTL (`KNAPSET_REGISTRY_CACHE_TTL`, default `3600`s) to `marketplace_cache.json` in `MarketplaceClient`, automatic index refresh on top-level `install()` with stale-cache offline fallback, and `--refresh` flag on `module search`, `info`, `install`, and `install-bundle`.
-- Added Python `3.14` to the GitHub Actions CI matrix in both `knapset` and `knapset-registry`.
-- Updated `docs/pc_builder.md` CLI examples to `ks` and generated `packaging/aur/.SRCINFO`.
+- Added Python `3.14` to the GitHub Actions CI matrix in both `knapset` and `knapset-registry` and upgraded workflow actions to `v7`.
 - Made `TestMarketplaceClient` deterministic offline via `locate_registry_dir()` and added mocked HTTP tests for remote registry directory downloads.
-- Updated remaining `main.py` references in `web_server.py` and `ARCHITECTURE.md` to include `ks`.
-- Upgraded GitHub Actions workflows (`actions/checkout`, `actions/setup-python`, `actions/upload-artifact`) to `v7`.
+- Updated remaining `main.py` references in `web_server.py`, `ARCHITECTURE.md`, and `docs/pc_builder.md`, and added `packaging/aur/.SRCINFO`.
 
 ## [1.0.1] - 2026-11-17
 
