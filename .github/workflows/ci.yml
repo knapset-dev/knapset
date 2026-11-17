@@ -80,8 +80,11 @@ jobs:
           export KNAPSET_HOME="$TMP_KNAPSET_HOME"
           export KNAPSET_REGISTRY_URL="file://${{ github.workspace }}/knapset-registry/registry.json"
           python main.py module install pc
-          python main.py pc build --quiet
+          python main.py pc build --no-ai -b 850
           python main.py module uninstall pc
+          python main.py module install fishing
+          python main.py fishing build -b 150
+          python main.py module uninstall fishing
           rm -rf "$TMP_KNAPSET_HOME"
           python -m pip install --quiet build
           python -m build
