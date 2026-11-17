@@ -49,13 +49,14 @@ data/*_market_cache.json  --->  knapset_market.db  --->  knapset (core)  <---  k
 Install globally (`ks` and `knapset` commands in `$PATH`):
 
 ```bash
-# Arch Linux / CachyOS (AUR):
-paru -S knapset
+# Arch Linux / CachyOS (1-line package install from GitHub Release):
+sudo pacman -U https://github.com/knapset-dev/knapset/releases/download/v1.0.0/knapset-1.0.0-1-any.pkg.tar.zst
+
 # Or build locally from packaging/aur/PKGBUILD:
-cd packaging/aur && makepkg -si
+curl -fsSLO https://raw.githubusercontent.com/knapset-dev/knapset/main/packaging/aur/PKGBUILD && updpkgsums && makepkg -si
 
 # Cross-platform via uv (zero external Python dependencies):
-uv tool install https://github.com/knapset-dev/knapset.git
+uv tool install git+https://github.com/knapset-dev/knapset.git
 
 # Run from any directory once installed:
 ks --help
