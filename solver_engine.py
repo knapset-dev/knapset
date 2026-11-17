@@ -15,7 +15,7 @@ import itertools
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from formula_engine import (
     FormulaSpec,
@@ -546,6 +546,7 @@ def solve_sets(
     top_n: int = 5,
     pareto_limit: int = 40,
     max_nodes: int = 120000,
+    should_abort: Optional[Callable[[], bool]] = None,
 ) -> Tuple[List[SetSolution], Dict[str, Any]]:
     """
     Solves multi-slot combinatorial optimization (1 item per slot in `slot_pools`) using
@@ -739,6 +740,9 @@ def solve_sets(
         if nodes >= max_nodes:
             truncated = True
             return
+        if should_abort is not None and (nodes & 0xFF) == 0 and should_abort():
+            truncated = True
+            return
         nodes += 1
 
         if depth == n_slots:
@@ -764,9 +768,13 @@ def solve_sets(
                 heapq.heapreplace(top_scores_heap, current_add_util)
             return
 
-        # O(1) additive upper bound pruning via cached min-heap floor
+        # O(1) additive upper bound pruning via cached min-heap floor; also skip redundant ties once >= 128 feasible sets exist
         if not cross_slot_terms and len(top_scores_heap) >= cutoff_cap:
-            if current_add_util + suffix_max_util[depth] + max_cross_w < top_scores_heap[0] - 1e-9:
+            optimistic = current_add_util + suffix_max_util[depth] + max_cross_w
+            if len(feasible_sets) >= max(top_n * 16, 128):
+                if optimistic <= top_scores_heap[0] + 1e-9:
+                    return
+            elif optimistic < top_scores_heap[0] - 1e-9:
                 return
 
         sname = search_order[depth]

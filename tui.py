@@ -593,7 +593,7 @@ class TuiSessionState:
         }
 
     @staticmethod
-    def run_solve_snapshot(snap: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    def run_solve_snapshot(snap: Dict[str, Any], should_abort: Optional[Any] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         slot_pools = snap["slot_pools"]
         if not slot_pools:
             return [], {}
@@ -627,6 +627,7 @@ class TuiSessionState:
             formulas=snap["formulas"],
             where=snap["where"],
             top_n=snap["top_n"],
+            should_abort=should_abort,
         )
         return [s.to_dict() for s in sols], meta
 
@@ -710,7 +711,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
                 _WorkspaceItem(
                     kind="weight",
                     index=idx,
-                    label=f" {expr:<16} [{bar}] {mag:.2f} {pct:>2}% {arrow}",
+                    label=f" {expr[:17]:<17} [{bar}] {mag:.2f} {pct:>2}% {arrow}",
                     tone=tone,
                 )
             )
@@ -1444,6 +1445,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
         def _start_async_solve() -> None:
             nonlocal worker_running, solve_pending, needs_redraw
+            if worker_running:
+                return
             solve_pending = False
             worker_running = True
             gen = solve_gen
@@ -1452,7 +1455,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
             def _worker() -> None:
                 try:
-                    res, meta = TuiSessionState.run_solve_snapshot(snap)
+                    res, meta = TuiSessionState.run_solve_snapshot(snap, should_abort=lambda: solve_gen != gen)
                     result_queue.put((gen, res, meta, None))
                 except Exception as exc:
                     result_queue.put((gen, None, None, str(exc)))
@@ -1465,7 +1468,6 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 solve_gen += 1
                 solve_pending = False
                 worker_running = False
-                # Drain any stale queued worker replies
                 while not result_queue.empty():
                     try:
                         result_queue.get_nowait()
@@ -1481,16 +1483,20 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     done_gen, res, meta, err = result_queue.get_nowait()
                 except Exception:
                     break
+                worker_running = False
                 if done_gen == solve_gen:
-                    worker_running = False
                     if err is not None:
                         state.status_message = f"Check expression: {err}"
                     else:
                         state.results = res or []
                         state.meta = meta or {}
                     needs_redraw = True
+                elif not solve_pending:
+                    # A newer solve_gen arrived while previous worker ran; run the latest snapshot now
+                    solve_pending = True
+                    solve_due_at = time.monotonic()
 
-            if solve_pending and time.monotonic() >= solve_due_at:
+            if solve_pending and not worker_running and time.monotonic() >= solve_due_at:
                 _start_async_solve()
 
             if needs_redraw:
