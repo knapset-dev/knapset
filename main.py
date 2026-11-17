@@ -23,6 +23,9 @@ from app_paths import get_cli_prog as _cli_prog
 APP_VERSION = "1.0.2"
 
 SUBCOMMANDS = {
+    "inspect": "Inspect tables, columns, types, and ranges in a SQLite/CSV/JSON source",
+    "init": "Scaffold a starter v2 JSON preset from an existing database or file",
+    "compare": "Match and compare a candidate DB against a Reference DB (--ref)",
     "domains": "List registered domain extensions (Layouts & Weights)",
     "modules": "Inspect pluggable modules across all 5 decoupled subsystems",
     "plugins": "Alias for 'modules'",
@@ -100,6 +103,9 @@ def print_help() -> None:
     print("  --currency <CODE>   Set active target currency (default: USDT, e.g. USDT, USD, EUR, UAH)")
     print("  --rate <SPEC>       Override exchange rate(s), e.g. 'UAH:41.5' or 'EUR:0.92,UAH:42'\n")
     print("Core System Commands:")
+    print("  inspect     Inspect tables, columns, inferred types, and ranges in a DB/CSV/JSON source")
+    print("  init        Scaffold a starter v2 JSON preset from an existing database or file")
+    print("  compare     Match and compare a candidate DB against a Reference DB (--ref)")
     print("  module      Package manager & dev tools: search, info, install, update, remove, new, verify, list, config")
     print("  modules     Inspect pluggable modules across all 5 decoupled subsystems (aliases: plugins)")
     print("  domains     List registered domain extensions and layouts (aliases: extensions)")
@@ -886,7 +892,7 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(f"Usage: {_cli_prog()} {dom} {cmd} {' '.join(extra)}".rstrip() + "\n", file=sys.stderr)
             sys.exit(1)
 
-        if cmd in ("build", "modes", "mods", "search", "find", "eval", "vs", "compare"):
+        if cmd in ("build", "modes", "mods", "search", "find", "eval", "vs"):
             sub_cmd = cmd
             installed_domains = [d for d in list_domain_ids() if d != "template"]
             example_dom = installed_domains[0] if installed_domains else "<domain>"
@@ -898,7 +904,16 @@ def main(argv: Optional[List[str]] = None) -> None:
             sys.exit(1)
 
         # 3. Core system subcommands
-        if cmd in ("domains", "extensions"):
+        if cmd == "inspect":
+            from v2_cli import run_inspect
+            run_inspect(extra)
+        elif cmd == "init":
+            from v2_cli import run_init
+            run_init(extra)
+        elif cmd == "compare":
+            from v2_cli import run_compare
+            run_compare(extra)
+        elif cmd in ("domains", "extensions"):
             _run_domains(extra)
         elif cmd == "sync":
             _run_sync(extra)

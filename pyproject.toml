@@ -36,7 +36,9 @@ ks = "main:main"
 [tool.setuptools]
 py-modules = [
     "app_paths",
+    "enricher",
     "main",
+    "v2_cli",
     "currency",
     "analyzer_core",
     "audit_ledger",
@@ -56,6 +58,7 @@ py-modules = [
 
 [tool.setuptools.packages.find]
 include = [
+    "sources*",
     "configs*",
     "extensions*",
     "marketplace*",
