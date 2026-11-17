@@ -765,18 +765,22 @@ def run_curses_tui(state: TuiSessionState) -> None:
             "On Windows install `windows-curses` or use `ks serve` for the interactive Web Studio."
         ) from exc
 
-    # Calm palette — intentionally avoids COLOR_RED / COLOR_MAGENTA which render bright pink in many themes
-    C_CYAN, C_GREEN, C_AMBER, C_DIM = 1, 2, 3, 4
+    # Sleek dark agy palette — zero glaring white A_REVERSE slabs
+    C_CYAN, C_GREEN, C_MIN, C_AMBER, C_DIM, C_SEL, C_BAR = 1, 2, 3, 4, 5, 6, 7
 
     def _tone_attr(tone: str, selected: bool = False) -> int:
         base = {
             "accent": curses.color_pair(C_CYAN) | curses.A_BOLD,
             "pos": curses.color_pair(C_GREEN),
-            "min": curses.color_pair(C_AMBER),
+            "min": curses.color_pair(C_MIN),
             "muted": curses.color_pair(C_DIM) | curses.A_DIM,
         }.get(tone, curses.A_NORMAL)
         if selected:
-            return curses.A_REVERSE | (curses.color_pair(C_CYAN) if tone == "accent" else curses.A_NORMAL)
+            sel_color = {
+                "pos": curses.color_pair(C_GREEN) | curses.A_BOLD,
+                "min": curses.color_pair(C_MIN) | curses.A_BOLD,
+            }.get(tone, curses.color_pair(C_SEL) | curses.A_BOLD)
+            return sel_color | (curses.color_pair(C_SEL) if tone not in ("pos", "min") else 0)
         return base
 
     def _draw_box(stdscr: Any, y: int, x: int, h: int, w: int, title: str = "", active: bool = False) -> None:
@@ -822,7 +826,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
                 text = "".join(buf)
                 shown = text[-(inner_w - 2) :] if len(text) >= inner_w - 1 else text
-                stdscr.addnstr(row_y, mx + 2, f"> {shown:<{inner_w - 2}}", inner_w, curses.A_REVERSE)
+                stdscr.addnstr(row_y, mx + 2, f"› {shown:<{inner_w - 2}}", inner_w, curses.color_pair(C_SEL) | curses.A_BOLD)
                 input_row, input_col = row_y, mx + 4 + min(len(shown), inner_w - 3)
                 row_y += 1
 
@@ -894,8 +898,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 if ci >= len(choices):
                     break
                 name, desc = choices[ci]
-                row_txt = f"{name:<22} {desc}" if desc else name
-                attr = curses.A_REVERSE if ci == idx else curses.A_NORMAL
+                prefix = "▸ " if ci == idx else "  "
+                row_txt = f"{prefix}{name:<22} {desc}" if desc else f"{prefix}{name}"
+                attr = (curses.color_pair(C_SEL) | curses.A_BOLD) if ci == idx else curses.A_NORMAL
                 stdscr.addnstr(my + 1 + r, mx + 2, row_txt.ljust(inner_w)[:inner_w], inner_w, attr)
             stdscr.addnstr(my + mh - 2, mx + 2, hint, inner_w, curses.A_DIM)
             stdscr.refresh()
@@ -1283,10 +1288,15 @@ def run_curses_tui(state: TuiSessionState) -> None:
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
+            dark_sel_bg = 236 if getattr(curses, "COLORS", 0) >= 256 else -1
+            dark_bar_bg = 235 if getattr(curses, "COLORS", 0) >= 256 else -1
             curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
             curses.init_pair(C_GREEN, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_MIN, curses.COLOR_MAGENTA, -1)
             curses.init_pair(C_AMBER, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
+            curses.init_pair(C_SEL, curses.COLOR_CYAN, dark_sel_bg)
+            curses.init_pair(C_BAR, curses.COLOR_WHITE, dark_bar_bg)
 
         _run_welcome_if_empty(stdscr)
 
@@ -1329,8 +1339,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     break
                 it = ws_items[idx]
                 selected = (not focus_results) and (idx == left_cursor)
+                marker = "▸" if selected else " "
+                raw_lbl = it.label[1:] if it.label.startswith(" ") else it.label
                 attr = _tone_attr(it.tone, selected=selected)
-                line_text = it.label.ljust(left_w - 3)[: left_w - 3]
+                if selected and getattr(curses, "COLORS", 0) >= 256:
+                    attr = curses.color_pair(C_SEL) | curses.A_BOLD
+                line_text = f"{marker}{raw_lbl}".ljust(left_w - 3)[: left_w - 3]
                 stdscr.addnstr(pane_y + 1 + r, 2, line_text, left_w - 3, attr)
 
             ex_tag = " · Explain ON" if state.explain else ""
@@ -1348,7 +1362,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
             stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
             footer = " ↑↓:Nav  ←/→:Weight  Enter:Pick/Hop  d:Del  s:Save Pref  h:Hop Pref  o:DB  p:Preset  /:Cmds  q:Quit "
-            stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.A_REVERSE)
+            stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
             stdscr.refresh()
 
             ch = stdscr.getch()
