@@ -679,12 +679,12 @@ def _format_weight_bar(weight: float, width: int = 10) -> str:
 
 
 def _compute_hold_interval(hold_steps: int) -> float:
-    """Returns repeat interval (seconds) while holding a key: starts slow and caps at a low max speed."""
-    if hold_steps >= 7:
-        return 0.075
-    if hold_steps >= 3:
-        return 0.095
-    return 0.125
+    """Returns repeat interval (seconds) while holding a key: responsive start with a low capped max speed."""
+    if hold_steps >= 6:
+        return 0.065
+    if hold_steps >= 2:
+        return 0.072
+    return 0.080
 
 
 @dataclass
@@ -1457,24 +1457,20 @@ def run_curses_tui(state: TuiSessionState) -> None:
         last_step_sign = 0
         last_event_at = 0.0
         last_apply_at = 0.0
-        fast_events = 0
         hold_steps = 0
 
         def _nudge_weight(idx: int, sign: int, allow_accel: bool = True) -> None:
-            nonlocal last_step_idx, last_step_sign, last_event_at, last_apply_at, fast_events, hold_steps
+            nonlocal last_step_idx, last_step_sign, last_event_at, last_apply_at, hold_steps
             now = time.monotonic()
-            same_repeat = allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_event_at) <= 0.085
+            same_repeat = allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_event_at) <= 0.090
             last_step_idx = idx
             last_step_sign = sign
             last_event_at = now
             if same_repeat:
-                fast_events += 1
-                if fast_events >= 2 and (now - last_apply_at) < _compute_hold_interval(hold_steps):
+                if (now - last_apply_at) < _compute_hold_interval(hold_steps):
                     return
-                if fast_events >= 2:
-                    hold_steps += 1
+                hold_steps += 1
             else:
-                fast_events = 0
                 hold_steps = 0
             last_apply_at = now
             state.adjust_weight(idx, sign * 0.05, auto_solve=False)
