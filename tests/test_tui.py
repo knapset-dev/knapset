@@ -221,5 +221,43 @@ class TestTuiSessionState(unittest.TestCase):
                 self.assertEqual(state.results, [])
 
 
+class TestTuiSessionRestore(unittest.TestCase):
+    def test_saved_preferences_restore_on_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            csv_path = root / "parts.csv"
+            csv_path.write_text("name,price,score\nA,10,50\nB,20,90\nC,15,70\n", encoding="utf-8")
+            with patch.dict(os.environ, {"KNAPSET_HOME": str(root / "home")}):
+                first = TuiSessionState()
+                first.load_from_source(str(csv_path), mode="rank")
+                first.weights = [("score", 0.9), ("price", 0.1)]
+                first.weight_dirs = {"score": "max", "price": "min"}
+                first.save_preference_profile("My Prefs")
+
+                # Plain re-open restores the full saved session
+                second = TuiSessionState()
+                second.load_from_source(str(csv_path), mode="rank")
+                self.assertTrue(second.restore_saved_session())
+                self.assertEqual(second.profile, "my_prefs")
+                self.assertEqual(dict(second.weights)["score"], 0.9)
+                self.assertFalse(second.dirty)
+
+                # Overlay mode (explicit CLI overrides) keeps fresh slots but restores profiles
+                third = TuiSessionState()
+                third.load_from_source(str(csv_path), mode="rank")
+                self.assertTrue(third.restore_saved_session(overlay_only=True))
+                self.assertIn("my_prefs", third.saved_profiles)
+                self.assertEqual(dict(third.weights)["score"], 0.9)
+
+                # A different file with the same stem must not pick up the saved session
+                other_dir = root / "other"
+                other_dir.mkdir()
+                other = other_dir / "parts.csv"
+                other.write_text("name,price,score\nX,1,1\n", encoding="utf-8")
+                fourth = TuiSessionState()
+                fourth.load_from_source(str(other), mode="rank")
+                self.assertFalse(fourth.restore_saved_session())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -334,6 +334,43 @@ class TuiSessionState:
         self.re_solve()
         self.status_message = f"Opened '{p.name}' ({len(tbl_names)} slot(s), mode={self.mode})."
 
+    def restore_saved_session(self, overlay_only: bool = False) -> bool:
+        """
+        Restores previously saved preferences for the currently opened source.
+
+        Looks for `<user presets dir>/<preset_name>.json` (written by `s` / `save_preference_profile`)
+        and only uses it when its first source points at the same file that was just opened.
+        When `overlay_only` is True (explicit CLI `--ref` / `--mode`), the freshly built slots and
+        references are kept and only the saved profiles + last active profile are restored.
+        """
+        if not self.preset_name or not self.sources:
+            return False
+        path = get_user_presets_dir() / f"{self.preset_name}.json"
+        if not path.is_file():
+            return False
+        try:
+            cfg = resolve_preset(str(path))
+            saved_srcs = [Path(str(s.get("source", ""))).expanduser() for s in cfg.sources.values()]
+            cur_srcs = [Path(str(s.get("source", ""))).expanduser() for s in self.sources.values()]
+            if not saved_srcs or not cur_srcs or saved_srcs[0].resolve() != cur_srcs[0].resolve():
+                return False
+            if not overlay_only:
+                self.load_from_preset(str(path))
+                self.status_message = f"Restored saved session '{cfg.name}' [profile={self.profile}]."
+                return True
+            if not cfg.profiles:
+                return False
+            self.saved_profiles = {k: dict(v) for k, v in cfg.profiles.items()}
+            prof_key, prof_data = cfg.resolve_profile(None)
+            self._apply_profile_dict(prof_key, prof_data, cfg=None)
+            self._rebuild_columns_and_pools()
+            self.re_solve()
+            self.dirty = False
+            self.status_message = f"Restored saved preferences '{cfg.name}' [profile={prof_key}]."
+            return True
+        except Exception:
+            return False
+
     def remove_slot(self, slot_name: str) -> None:
         """Removes a DB slot/table from the workspace and cleans orphan references."""
         if slot_name not in self.sources:
@@ -1938,6 +1975,7 @@ def run_tui(argv: List[str]) -> None:
     parser.add_argument("--ref", default=None, help="Optional reference DB to attach")
     parser.add_argument("--match", default=None, help="Match expression for --ref")
     parser.add_argument("--mode", choices=["solve", "basket", "rank"], default=None, help="Initial solver mode")
+    parser.add_argument("--fresh", action="store_true", help="Ignore previously saved preferences for this source")
     args = parser.parse_args(argv)
 
     state = TuiSessionState()
@@ -1954,5 +1992,7 @@ def run_tui(argv: List[str]) -> None:
                 state.load_from_source(str(p), ref_path=args.ref, match_expr=args.match, mode=args.mode)
         else:
             state.load_from_source(args.target, ref_path=args.ref, match_expr=args.match, mode=args.mode)
+            if not args.fresh:
+                state.restore_saved_session(overlay_only=bool(args.ref or args.mode or args.match))
 
     run_curses_tui(state)
