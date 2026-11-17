@@ -435,10 +435,39 @@ def _add_common_solve_flags(parser: argparse.ArgumentParser, default_top: int = 
     parser.add_argument("--formula", "-f", action="append", default=[], help="Derived row formula, e.g. 'deal = (price - ref.msrp) / ref.msrp'")
     parser.add_argument("--where", "-w", action="append", default=[], help="Row filter expression, e.g. 'vram >= 12 and price <= 600'")
     parser.add_argument("--prefer", "-p", action="append", default=[], help="Signed weights, e.g. 'ref.score:+0.7,price:-0.3'")
+    parser.add_argument("--prefs", default=None, help="Saved preference profile name (see `prefs list`) or profile/preset file; explicit flags override it")
     parser.add_argument("--top", "-n", type=int, default=default_top, help=f"Number of results to return (default: {default_top})")
     parser.add_argument("--explain", action="store_true", help="Print per-term normalized score breakdown")
     parser.add_argument("--json", action="store_true", help="Output structured JSON")
     parser.add_argument("--export", default=None, help="Export results to .json, .csv, or .md")
+
+
+def _weights_to_prefer(weights: Dict[str, Any]) -> str:
+    return ",".join(f"{k}:{float(v):+g}" for k, v in weights.items())
+
+
+def _apply_prefs(args: argparse.Namespace) -> None:
+    """Fills --prefer/--formula/--where/--limit/--rule from `--prefs` for any group left empty on the CLI."""
+    ref = getattr(args, "prefs", None)
+    if not ref:
+        return
+    from preset_loader import list_shared_profiles, read_profile_file
+
+    path = Path(ref).expanduser()
+    if path.is_file():
+        _name, data = read_profile_file(path)
+    else:
+        lib = list_shared_profiles()
+        key = ref.strip().lower()
+        if key not in lib:
+            avail = ", ".join(lib) or "none saved yet"
+            raise SystemExit(f"error: saved profile '{ref}' not found (available: {avail}). See `{get_cli_prog()} prefs list`.")
+        data = lib[key]
+    if not args.prefer and data.get("weights"):
+        args.prefer = [_weights_to_prefer(data["weights"])]
+    for attr, key in (("formula", "formulas"), ("where", "where"), ("limit", "limits"), ("rule", "rules")):
+        if hasattr(args, attr) and isinstance(getattr(args, attr), list) and not getattr(args, attr) and data.get(key):
+            setattr(args, attr, list(data[key]))
 
 
 def _print_breakdown(bd_list: Sequence[Any]) -> None:
@@ -461,6 +490,7 @@ def run_rank(argv: List[str]) -> None:
     parser.add_argument("--query", "-q", default=None, help="Read-only SQL SELECT query for SQLite")
     _add_common_solve_flags(parser, default_top=15)
     args = parser.parse_args(argv)
+    _apply_prefs(args)
 
     rows = open_source(args.source).load_rows(table=args.table, query=args.query)
     ref_specs = [
@@ -515,6 +545,7 @@ def run_basket(argv: List[str]) -> None:
     parser.add_argument("--qty-field", default=None, help="Optional column capping per-row quantity")
     _add_common_solve_flags(parser, default_top=5)
     args = parser.parse_args(argv)
+    _apply_prefs(args)
 
     rows = open_source(args.source).load_rows(table=args.table, query=args.query)
     ref_specs = [
@@ -582,6 +613,7 @@ def run_solve(argv: List[str]) -> None:
     parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule, e.g. 'cpu.socket == mobo.socket'")
     _add_common_solve_flags(parser, default_top=5)
     args = parser.parse_args(argv)
+    _apply_prefs(args)
 
     slot_pools: Dict[str, List[Dict[str, Any]]] = {}
     if args.source:
@@ -891,6 +923,115 @@ def run_preset(argv: List[str]) -> None:
             return
         for entry in rep:
             print(f"  {entry.get('name'):<20} [{entry.get('status')}] sha_ok={entry.get('checksum_match')} safe={entry.get('security_safe')}")
+
+
+def run_prefs(argv: List[str]) -> None:
+    """`ks prefs` — manage the shared, DB-independent library of saved preference profiles."""
+    from preset_loader import (
+        get_user_profiles_dir,
+        list_shared_profiles,
+        read_profile_file,
+        save_shared_profile,
+    )
+
+    prog = get_cli_prog()
+    parser = argparse.ArgumentParser(
+        prog=f"{prog} prefs",
+        description="Manage saved preference profiles (weights, formulas, filters, limits, rules) reusable on any DB with matching columns.",
+    )
+    sub = parser.add_subparsers(dest="subcommand", help="Preference action")
+
+    p_list = sub.add_parser("list", help="List saved preference profiles")
+    p_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_show = sub.add_parser("show", help="Show one saved profile")
+    p_show.add_argument("name")
+
+    p_save = sub.add_parser("save", help="Create/update a saved profile from flags")
+    p_save.add_argument("name")
+    p_save.add_argument("--prefer", "-p", action="append", default=[], help="Signed weights, e.g. 'score:+0.7,price:-0.3'")
+    p_save.add_argument("--formula", "-f", action="append", default=[], help="Derived row formula")
+    p_save.add_argument("--where", "-w", action="append", default=[], help="Row filter expression")
+    p_save.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit")
+    p_save.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule")
+    p_save.add_argument("--mode", choices=["rank", "basket", "solve"], default=None)
+
+    p_imp = sub.add_parser("import", help="Import a profile from a profile file or a preset (.json/.toml)")
+    p_imp.add_argument("file")
+    p_imp.add_argument("--name", default=None, help="Name in the library (default: name from file)")
+    p_imp.add_argument("--profile", default=None, help="Profile to take when importing a preset with several")
+
+    p_exp = sub.add_parser("export", help="Write a saved profile to a standalone file")
+    p_exp.add_argument("name")
+    p_exp.add_argument("file")
+
+    p_rm = sub.add_parser("remove", help="Delete a saved profile")
+    p_rm.add_argument("name")
+
+    sub.add_parser("path", help="Print the shared profiles directory")
+
+    args = parser.parse_args(argv)
+    if not args.subcommand:
+        parser.print_help()
+        return
+
+    lib = list_shared_profiles()
+
+    def _get(name: str) -> Dict[str, Any]:
+        key = name.strip().lower()
+        if key not in lib:
+            raise SystemExit(f"error: saved profile '{name}' not found (available: {', '.join(lib) or 'none'}).")
+        return lib[key]
+
+    if args.subcommand == "path":
+        print(get_user_profiles_dir())
+    elif args.subcommand == "list":
+        if args.json:
+            print(json.dumps(lib, indent=2, ensure_ascii=False))
+            return
+        if not lib:
+            print(f"No saved profiles yet in {get_user_profiles_dir()} (press `s` in `{prog} tui` or use `{prog} prefs save`).")
+            return
+        print(f"\nSaved Preferences ({get_user_profiles_dir()})")
+        print("═" * 84)
+        for name, d in lib.items():
+            w = _weights_to_prefer(d.get("weights") or {})
+            print(f"  {name:<20} [{d.get('mode', '-'):<6}] {w[:50]}")
+        print()
+    elif args.subcommand == "show":
+        print(json.dumps(_get(args.name), indent=2, ensure_ascii=False))
+    elif args.subcommand == "save":
+        weights: Dict[str, float] = {}
+        for chunk in args.prefer:
+            for part in chunk.split(","):
+                if part.strip():
+                    expr, _, val = part.rpartition(":")
+                    if not expr:
+                        raise SystemExit(f"error: bad weight '{part}', expected 'expr:+0.5'.")
+                    weights[expr.strip()] = float(val)
+        data = {"mode": args.mode or "rank", "weights": weights, "formulas": args.formula, "where": args.where,
+                "limits": args.limit, "rules": args.rule}
+        path = save_shared_profile(args.name, data)
+        print(f"[OK] Saved profile '{args.name}' -> {path}")
+    elif args.subcommand == "import":
+        name, data = read_profile_file(args.file, args.profile)
+        path = save_shared_profile(args.name or name, data)
+        print(f"[OK] Imported '{args.name or name}' -> {path}")
+    elif args.subcommand == "export":
+        data = _get(args.name)
+        out = save_shared_profile(args.name, data, directory=Path(args.file).expanduser().resolve().parent)
+        target = Path(args.file).expanduser().resolve()
+        if out != target:
+            out.replace(target)
+        print(f"[OK] Exported '{args.name}' -> {target}")
+    elif args.subcommand == "remove":
+        _get(args.name)
+        path = get_user_profiles_dir() / f"{args.name.strip().lower()}.json"
+        if path.is_file():
+            path.unlink()
+            print(f"[OK] Removed '{args.name}'")
+        else:
+            raise SystemExit(f"error: '{args.name}' is not a standalone file in {get_user_profiles_dir()}.")
 
 
 def run_reg(argv: List[str]) -> None:

@@ -10,6 +10,7 @@ Usage:
   ks solve   <db_or_slots> --limit/rule ... Synthesize multi-slot sets across tables/files
   ks run     <preset> [--profile ...]       Execute a saved v2 preset (.json/.toml) with CLI overrides
   ks preset  <list|search|install|...>      Manage local & registry v2 presets
+  ks prefs   <list|show|save|import|...>    Manage saved preferences reusable on any DB (use with --prefs NAME)
   ks init    <db> [--ref ...]               Scaffold a starter v2 preset JSON from an existing DB
   ks tui     [db_or_preset]                 Launch interactive curses TUI (weights +/- , formulas, rules)
   ks serve   [--port 8080]                  Start local Web Studio & REST API server
@@ -39,6 +40,7 @@ SUBCOMMANDS: Dict[str, str] = {
     "solve": "Synthesize multi-slot combinations across tables/files with weights, limits, and AST rules",
     "run": "Execute a saved Knapset v2 preset (.json/.toml or installed name) with CLI overrides",
     "preset": "Manage local and registry presets (list, search, info, install, remove, verify)",
+    "prefs": "Manage saved preference profiles reusable across DBs (list, show, save, import, export, remove)",
     "reg": "Manage registry items & themes (search, info, install, list, remove, verify, theme)",
     "tui": "Launch interactive Terminal UI (curses) for live +/- weights, formulas, limits, and rules",
     "serve": "Start zero-dependency Web Studio & REST API server (alias: web)",
@@ -102,6 +104,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif cmd == "preset":
         from v2_cli import run_preset
         run_preset(extra)
+    elif cmd == "prefs":
+        from v2_cli import run_prefs
+        run_prefs(extra)
     elif cmd in ("reg", "registry"):
         from v2_cli import run_reg
         run_reg(extra)

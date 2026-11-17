@@ -85,6 +85,13 @@ ks reg theme use soft-dark-pink
 #    In the TUI: `s` saves to ~/.config/knapset/profiles/, `l` (or /profiles) applies a saved profile
 #    (or loads one from any profile/preset file) onto whatever DB is open.
 ks tui other_shop.db --prefs my_prefs
+
+#    CLI: manage the library and apply it to rank / basket / solve
+ks prefs list
+ks prefs save quality -p "score:+0.8,price:-0.2" -w "price > 0"
+ks prefs import my_preset.json --name quality     # from a profile file or any preset
+ks prefs export quality ./quality.json
+ks rank other_shop.csv --prefs quality --top 5     # explicit flags override the profile
 ```
 
 ---
