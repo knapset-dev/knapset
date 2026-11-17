@@ -95,8 +95,10 @@ class TestTuiSessionState(unittest.TestCase):
             state.explain = True
             rendered = _render_result_lines(state, 90)
             self.assertTrue(any("╭─ #1 │ Score" in line for line in rendered))
-            self.assertEqual(len(_format_weight_bar(0.5, width=8)), 8)
-            self.assertIn("█", _format_weight_bar(0.5, width=8))
+            self.assertEqual(len(_format_weight_bar(0.5)), 10)
+            self.assertEqual(_format_weight_bar(0.5), "█████░░░░░")
+            self.assertEqual(_format_weight_bar(0.6), "██████░░░░")
+            self.assertEqual(_format_weight_bar(0.15), "█▌░░░░░░░░")
 
             # Clamping within [0.0, 1.0] & direction toggle
             state.adjust_weight(0, 5.0)

@@ -669,10 +669,13 @@ class TuiSessionState:
 # ---------------------------------------------------------------------------
 
 
-def _format_weight_bar(weight: float, width: int = 8) -> str:
+def _format_weight_bar(weight: float, width: int = 10) -> str:
+    """Renders `[0, 1]` weight bar where every 10% (0.10) is 1 full `█` symbol (and 5% is `▌`)."""
     mag = max(0.0, min(1.0, abs(weight)))
-    filled = max(0, min(width, int(round(mag * width))))
-    return "█" * filled + "░" * (width - filled)
+    half_steps = max(0, min(width * 2, int(round(mag * width * 2))))
+    full = half_steps // 2
+    half = half_steps % 2
+    return "█" * full + ("▌" * half) + "░" * (width - full - half)
 
 
 @dataclass
@@ -695,7 +698,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
         active_n = sum(1 for m in mags if m > 1e-9)
         eq_threshold = (1.0 / active_n) if active_n > 0 else 1.0
         for idx, ((expr, val), mag) in enumerate(zip(state.weights, mags)):
-            bar = _format_weight_bar(mag, width=7)
+            bar = _format_weight_bar(mag, width=10)
             is_min = (val < 0) or (state.weight_dirs.get(expr) == "min")
             arrow = "↓ min" if is_min else "↑ max"
             share = (mag / total_w) if total_w > 1e-9 else 0.0
@@ -711,7 +714,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
                 _WorkspaceItem(
                     kind="weight",
                     index=idx,
-                    label=f" {expr[:14]:<14} [-][{bar}][+] {mag:.2f} {pct:>2}% {arrow}",
+                    label=f" {expr[:12]:<12} [-][{bar}][+] {mag:.2f} {pct:>2}% {arrow}",
                     tone=tone,
                 )
             )
@@ -1665,19 +1668,18 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             left_cursor = clicked_idx
                             it = ws_items[left_cursor]
                             if it.kind == "weight":
-                                if 17 <= mx <= 20:
+                                if 15 <= mx <= 18:
                                     state.adjust_weight(it.index, -0.1, auto_solve=False)
                                     _schedule_solve()
-                                elif 21 <= mx <= 29:
-                                    # Proportional click directly along [███████] (cols 22..28)
-                                    frac = max(0.0, min(1.0, (mx - 22) / 6.0))
-                                    snapped = round(round(frac * 20) / 20.0, 2)
+                                elif 19 <= mx <= 30:
+                                    # Click directly along 10-symbol [██████████] bar (cols 19..30 -> 0.0 .. 1.0)
+                                    val_click = round(max(0.0, min(1.0, (mx - 19) / 10.0)), 1)
                                     w_expr, _ = state.weights[it.index]
-                                    state.weights[it.index] = (w_expr, snapped)
+                                    state.weights[it.index] = (w_expr, val_click)
                                     state.dirty = True
-                                    state.status_message = f"{w_expr}: {snapped:.2f}"
+                                    state.status_message = f"{w_expr}: {val_click:.2f}"
                                     _schedule_solve()
-                                elif 30 <= mx <= 33:
+                                elif 31 <= mx <= 34:
                                     state.adjust_weight(it.index, 0.1, auto_solve=False)
                                     _schedule_solve()
                                 elif mx >= 43:
