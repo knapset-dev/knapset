@@ -678,6 +678,15 @@ def _format_weight_bar(weight: float, width: int = 10) -> str:
     return "█" * full + ("▌" * half) + "░" * (width - full - half)
 
 
+def _compute_accelerated_step(streak: int, base_step: float = 0.05) -> float:
+    """Returns `0.05` (5%) initially, accelerating smoothly to `0.10` and `0.15` on rapid bursts."""
+    if streak >= 6:
+        return round(base_step * 3, 2)
+    if streak >= 3:
+        return round(base_step * 2, 2)
+    return base_step
+
+
 @dataclass
 class _WorkspaceItem:
     kind: str  # "header" | "profile" | "weight" | "limit" | "rule" | "formula" | "where" | "action" | "slot" | "ref"
@@ -1437,13 +1446,31 @@ def run_curses_tui(state: TuiSessionState) -> None:
         solve_due_at = 0.0
         solve_gen = 0
         worker_running = False
-        DEBOUNCE_SEC = 0.45
+        DEBOUNCE_SEC = 0.25
         result_queue: queue.SimpleQueue = queue.SimpleQueue()
         needs_redraw = True
         force_clear = True
         cached_res_key: Any = None
         cached_res_lines: List[str] = []
         last_dims: Tuple[int, int] = (0, 0)
+        last_step_idx = -1
+        last_step_sign = 0
+        last_step_at = 0.0
+        step_streak = 0
+
+        def _nudge_weight(idx: int, sign: int, allow_accel: bool = True) -> None:
+            nonlocal last_step_idx, last_step_sign, last_step_at, step_streak
+            now = time.monotonic()
+            if allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_step_at) <= 0.35:
+                step_streak += 1
+            else:
+                step_streak = 0
+            last_step_idx = idx
+            last_step_sign = sign
+            last_step_at = now
+            mag_step = _compute_accelerated_step(step_streak, base_step=0.05) if allow_accel else 0.05
+            state.adjust_weight(idx, sign * mag_step, auto_solve=False)
+            _schedule_solve()
 
         def _schedule_solve() -> None:
             nonlocal solve_pending, solve_due_at, solve_gen, needs_redraw
@@ -1669,19 +1696,18 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             it = ws_items[left_cursor]
                             if it.kind == "weight":
                                 if 15 <= mx <= 18:
-                                    state.adjust_weight(it.index, -0.1, auto_solve=False)
-                                    _schedule_solve()
+                                    _nudge_weight(it.index, -1, allow_accel=True)
                                 elif 19 <= mx <= 30:
-                                    # Click directly along 10-symbol [██████████] bar (cols 19..30 -> 0.0 .. 1.0)
-                                    val_click = round(max(0.0, min(1.0, (mx - 19) / 10.0)), 1)
+                                    # Click directly along 10-symbol [██████████] bar in 5% steps (0.00 .. 1.00)
+                                    frac = max(0.0, min(1.0, (mx - 19) / 10.0))
+                                    val_click = round(round(frac * 20) / 20.0, 2)
                                     w_expr, _ = state.weights[it.index]
                                     state.weights[it.index] = (w_expr, val_click)
                                     state.dirty = True
                                     state.status_message = f"{w_expr}: {val_click:.2f}"
                                     _schedule_solve()
                                 elif 31 <= mx <= 34:
-                                    state.adjust_weight(it.index, 0.1, auto_solve=False)
-                                    _schedule_solve()
+                                    _nudge_weight(it.index, 1, allow_accel=True)
                                 elif mx >= 43:
                                     state.toggle_weight_direction(it.index, auto_solve=False)
                                     _schedule_solve()
@@ -1723,20 +1749,16 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     solve_due_at = time.monotonic() + DEBOUNCE_SEC
             elif ch in (ord("+"), ord("="), curses.KEY_RIGHT):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, 0.1, auto_solve=False)
-                    _schedule_solve()
+                    _nudge_weight(ws_items[left_cursor].index, 1, allow_accel=True)
             elif ch in (ord("-"), ord("_"), curses.KEY_LEFT):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, -0.1, auto_solve=False)
-                    _schedule_solve()
+                    _nudge_weight(ws_items[left_cursor].index, -1, allow_accel=True)
             elif ch == ord("]"):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, 0.05, auto_solve=False)
-                    _schedule_solve()
+                    _nudge_weight(ws_items[left_cursor].index, 1, allow_accel=False)
             elif ch == ord("["):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, -0.05, auto_solve=False)
-                    _schedule_solve()
+                    _nudge_weight(ws_items[left_cursor].index, -1, allow_accel=False)
             elif ch in (ord("t"), ord("T"), ord(" ")):
                 if ws_items[left_cursor].kind == "weight":
                     state.toggle_weight_direction(ws_items[left_cursor].index, auto_solve=False)
