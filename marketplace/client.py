@@ -73,6 +73,8 @@ SUBSYSTEMS_MAP = {
     "ai_providers": "ai_providers/modules",
     "extension": "extensions",
     "extensions": "extensions",
+    "preset": "presets",
+    "presets": "presets",
 }
 
 
@@ -124,6 +126,8 @@ TYPE_ALIASES = {
     "ai": "ai_providers",
     "extension": "extension",
     "domain": "extension",
+    "preset": "presets",
+    "presets": "presets",
 }
 
 
@@ -706,7 +710,10 @@ class MarketplaceClient:
         computed_sha = ""
         # Single-file installation
         if manifest.source_type == "single_file":
-            dest_file = target_modules_dir / f"{manifest.name}.py"
+            dl_ext = Path(manifest.download_url.split("?")[0]).suffix.lower()
+            is_preset_data = manifest.subsystem in ("preset", "presets") or dl_ext in (".json", ".toml")
+            ext = dl_ext if (is_preset_data and dl_ext in (".json", ".toml")) else (".json" if is_preset_data else ".py")
+            dest_file = target_modules_dir / f"{manifest.name}{ext}"
             if not dest_file.resolve().is_relative_to(target_modules_dir.resolve()):
                 return fail_install(f"Security violation: path traversal detected for module '{manifest.name}'.")
 
@@ -725,15 +732,27 @@ class MarketplaceClient:
                 return fail_install(f"SHA256 mismatch! Expected {manifest.sha256}, got {computed_sha}")
 
             code_text = code_bytes.decode("utf-8", errors="replace")
-            # Run AST Security Scanner with subsystem role checking
-            sec_report = SecurityScanner.scan_code(
-                code_text, filename=f"{manifest.name}.py", subsystem=manifest.subsystem
-            )
-            if not sec_report.is_safe:
-                return fail_install(f"Security Scanner Rejected Module:\n{sec_report.summary()}")
+            if is_preset_data:
+                try:
+                    from preset_loader import PresetConfig
+
+                    if ext == ".toml":
+                        import tomllib
+                        PresetConfig.from_dict(tomllib.loads(code_text))
+                    else:
+                        PresetConfig.from_dict(json.loads(code_text))
+                except Exception as exc:
+                    return fail_install(f"Invalid v2 preset schema in '{manifest.name}': {exc}")
+            else:
+                # Run AST Security Scanner with subsystem role checking
+                sec_report = SecurityScanner.scan_code(
+                    code_text, filename=f"{manifest.name}.py", subsystem=manifest.subsystem
+                )
+                if not sec_report.is_safe:
+                    return fail_install(f"Security Scanner Rejected Module:\n{sec_report.summary()}")
 
             _atomic_write_text(dest_file, code_text)
-            dest_rel_path = f"{subsystem_dir_rel}/{manifest.name}.py"
+            dest_rel_path = f"{subsystem_dir_rel}/{manifest.name}{ext}"
 
         # Directory package installation
         elif manifest.source_type == "directory":
@@ -1082,6 +1101,30 @@ class MarketplaceClient:
         if "extensions" in str(path):
             subsystem = "extension"
 
+        if path.is_file() and path.suffix.lower() in (".json", ".toml"):
+            current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+            violations: List[str] = []
+            warnings: List[str] = []
+            try:
+                from preset_loader import load_preset
+                load_preset(path)
+            except Exception as exc:
+                violations.append(f"Invalid preset schema: {exc}")
+            is_safe = len(violations) == 0
+            return {
+                "name": path.name,
+                "path": str(path),
+                "subsystem": "preset",
+                "version": "2.0",
+                "status": "HEALTHY" if is_safe else "UNSAFE",
+                "exists": True,
+                "checksum_match": True,
+                "security_safe": is_safe,
+                "current_sha": current_sha,
+                "violations": violations,
+                "warnings": warnings,
+            }
+
         if path.is_file():
             sec_report = SecurityScanner.scan_file(path, subsystem=subsystem)
             current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -1164,7 +1207,16 @@ class MarketplaceClient:
                 })
                 continue
 
-            if file_path.is_file():
+            if file_path.is_file() and file_path.suffix.lower() in (".json", ".toml"):
+                from marketplace.security import SecurityReport
+                current_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                try:
+                    from preset_loader import load_preset
+                    load_preset(file_path)
+                    sec_report = SecurityReport(is_safe=True)
+                except Exception as exc:
+                    sec_report = SecurityReport(is_safe=False, violations=[f"Invalid preset: {exc}"])
+            elif file_path.is_file():
                 current_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
                 sec_report = SecurityScanner.scan_file(file_path, subsystem=rec.subsystem)
             else:

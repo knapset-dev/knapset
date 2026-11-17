@@ -39,6 +39,7 @@ py-modules = [
     "enricher",
     "formula_engine",
     "main",
+    "preset_loader",
     "solver_engine",
     "v2_cli",
     "currency",

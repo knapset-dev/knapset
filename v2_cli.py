@@ -660,3 +660,234 @@ def run_solve(argv: List[str]) -> None:
         if args.explain:
             _print_breakdown(sol.breakdown)
         print()
+
+
+def _flatten_preset_results(mode: str, results: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    flat_rows: List[Dict[str, Any]] = []
+    if mode == "rank":
+        for idx, r in enumerate(results, 1):
+            flat_rows.append({"rank": idx, "score": r["score"], **_flatten_scalar_fields(r["row"])})
+    elif mode == "basket":
+        for s_idx, sol in enumerate(results, 1):
+            for it in sol["items"]:
+                flat_rows.append(
+                    {
+                        "solution": s_idx,
+                        "total_score": sol["total_score"],
+                        "qty": it["count"],
+                        "item_score": it["item_score"],
+                        **_flatten_scalar_fields(it["row"]),
+                    }
+                )
+    else:
+        for idx, sol in enumerate(results, 1):
+            for sname, item in sol["slots"].items():
+                flat_rows.append(
+                    {
+                        "solution": idx,
+                        "total_score": sol["total_score"],
+                        "slot": sname,
+                        **_flatten_scalar_fields(item),
+                    }
+                )
+    return flat_rows
+
+
+def _print_preset_execution(res: Dict[str, Any], explain: bool) -> None:
+    mode = res["mode"]
+    results = res["results"]
+    print(f"\nPreset '{res['title']}' [mode={mode}, profile={res['profile']}]")
+    print("═" * 84)
+    if not results:
+        print("  (No feasible results found.)\n")
+        return
+    if mode == "rank":
+        for idx, r in enumerate(results, 1):
+            row = r["row"]
+            metrics = ", ".join(f"{k}={v}" for k, v in _flatten_scalar_fields(row).items() if k not in ("id", "title", "name", "model"))
+            print(f"  {idx:>2}. [{r['score']:5.1f}] {_row_label(row)[:34]:<34} │ {metrics[:40]}")
+            if explain and r.get("breakdown"):
+                parts = [
+                    f"{b['expression']}[raw={b['raw_value']}, n={b['normalized']:.2f}, w={b['weight']:+g} -> +{b['contribution']:.1f}]"
+                    for b in r["breakdown"]
+                ]
+                print(f"      explain: {' | '.join(parts)}")
+    elif mode == "basket":
+        for idx, sol in enumerate(results, 1):
+            lim_str = ", ".join(f"{k} => {v:g}" for k, v in (sol.get("metrics") or {}).items())
+            print(f"  Basket #{idx} │ Utility: {sol['total_score']:.1f} │ Items: {sol['item_count']}" + (f" │ {lim_str}" if lim_str else ""))
+            for it in sol["items"]:
+                qty_tag = f" x{it['count']}" if it["count"] > 1 else ""
+                print(f"    • [{it['item_score']:5.1f}] {_row_label(it['row'])}{qty_tag}")
+    else:
+        for idx, sol in enumerate(results, 1):
+            lim_str = ", ".join(f"{k} => {v:g}" for k, v in (sol.get("metrics") or {}).items())
+            print(f"  Set #{idx} │ Score: {sol['total_score']:.1f}" + (f" │ {lim_str}" if lim_str else ""))
+            for sname, item in sol["slots"].items():
+                price_hint = f" (price={item['price']})" if "price" in item else ""
+                print(f"    • {sname:<12}: {_row_label(item)}{price_hint}")
+            if explain and sol.get("breakdown"):
+                parts = [
+                    f"{b['expression']}[raw={b['raw_value']}, n={b['normalized']:.2f}, w={b['weight']:+g} -> +{b['contribution']:.1f}]"
+                    for b in sol["breakdown"]
+                ]
+                print(f"      explain: {' | '.join(parts)}")
+    print()
+
+
+def run_run(argv: List[str]) -> None:
+    from preset_loader import resolve_preset
+
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} run",
+        description="Execute a Knapset v2 JSON/TOML preset (or installed preset name) with optional CLI overrides.",
+    )
+    parser.add_argument("preset", help="Preset file path (.json/.toml), directory, or installed preset name")
+    parser.add_argument("--profile", "-P", default=None, help="Weight profile name defined inside preset")
+    parser.add_argument("--mode", "-m", choices=["rank", "basket", "solve"], default=None, help="Override preset optimization mode")
+    parser.add_argument("--slot", action="append", default=[], help="Override slot source path: 'slot_name=path'")
+    parser.add_argument("--formula", "-f", action="append", default=[], help="Append derived formula")
+    parser.add_argument("--where", "-w", action="append", default=[], help="Append filter expression")
+    parser.add_argument("--prefer", "-p", action="append", default=[], help="Override signed weights, e.g. 'price:-0.5,score:+0.5'")
+    parser.add_argument("--limit", "-l", action="append", default=[], help="Override aggregate limits, e.g. 'sum(price) <= 900'")
+    parser.add_argument("--rule", "-r", action="append", default=[], help="Append compatibility rule")
+    parser.add_argument("--top", "-n", type=int, default=None, help="Override top N results")
+    parser.add_argument("--explain", action="store_true", help="Print per-term score breakdown")
+    parser.add_argument("--json", action="store_true", help="Output structured JSON")
+    parser.add_argument("--export", default=None, help="Export results to .json, .csv, or .md")
+    args = parser.parse_args(argv)
+
+    cfg = resolve_preset(args.preset)
+    src_overrides: Dict[str, str] = {}
+    for s in args.slot:
+        if "=" not in s:
+            raise ValueError(f"Invalid --slot override '{s}'. Expected 'slot=path'.")
+        k, v = s.split("=", 1)
+        src_overrides[k.strip()] = v.strip()
+
+    res = cfg.execute(
+        profile_name=args.profile,
+        mode_override=args.mode,
+        prefer_override=args.prefer or None,
+        limits_override=args.limit or None,
+        where_override=args.where or None,
+        formulas_override=args.formula or None,
+        rules_override=args.rule or None,
+        top_n=args.top,
+        source_overrides=src_overrides or None,
+    )
+
+    if args.export:
+        flat_rows = _flatten_preset_results(res["mode"], res["results"])
+        _export_output(args.export, res, flat_rows, f"Knapset Preset: {res['title']}")
+
+    if args.json:
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+        return
+
+    _print_preset_execution(res, explain=args.explain)
+
+
+def run_preset(argv: List[str]) -> None:
+    from marketplace.client import MarketplaceClient
+    from preset_loader import discover_presets
+
+    prog = get_cli_prog()
+    parser = argparse.ArgumentParser(
+        prog=f"{prog} preset",
+        description="Manage local & registry Knapset v2 presets (list, search, info, install, remove, verify).",
+    )
+    sub = parser.add_subparsers(dest="subcommand", help="Preset action")
+
+    p_list = sub.add_parser("list", help="List locally discovered & installed v2 presets")
+    p_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_search = sub.add_parser("search", help="Search presets & modules in knapset-registry")
+    p_search.add_argument("query", nargs="?", default="", help="Search query")
+    p_search.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_search.add_argument("--refresh", action="store_true", help="Refresh registry cache")
+    p_search.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_info = sub.add_parser("info", help="Show details of a registry preset/module")
+    p_info.add_argument("name", help="Preset name")
+    p_info.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_info.add_argument("--refresh", action="store_true", help="Refresh registry cache")
+
+    p_inst = sub.add_parser("install", help="Install a preset from knapset-registry")
+    p_inst.add_argument("target", help="Preset name or 'preset:<name>'")
+    p_inst.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_inst.add_argument("--force", "-f", action="store_true", help="Overwrite existing preset")
+
+    p_rem = sub.add_parser("remove", help="Remove an installed preset")
+    p_rem.add_argument("name", help="Installed preset name")
+
+    p_ver = sub.add_parser("verify", help="Verify preset checksums and schema validity")
+    p_ver.add_argument("target", nargs="?", default=None, help="Optional preset name or file path")
+    p_ver.add_argument("--json", action="store_true", help="Output JSON")
+
+    args = parser.parse_args(argv)
+    if not args.subcommand:
+        parser.print_help()
+        return
+
+    if args.subcommand == "list":
+        presets = discover_presets()
+        if args.json:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "name": cfg.name,
+                            "title": cfg.title,
+                            "mode": cfg.mode,
+                            "profiles": cfg.profile_names(),
+                            "path": str(cfg.source_path) if cfg.source_path else "",
+                        }
+                        for cfg in presets.values()
+                    ],
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return
+        print(f"\nDiscovered Knapset v2 Presets ({len(presets)})")
+        print("═" * 84)
+        if not presets:
+            print("  (No v2 presets found. Create one with `ks init <db>` or install via `ks preset install <name>`.)\n")
+            return
+        for cfg in presets.values():
+            profs = ", ".join(cfg.profile_names())
+            print(f"  {cfg.name:<18} │ {cfg.mode:<6} │ profiles: {profs:<22} │ {cfg.title}")
+        print()
+        return
+
+    client = MarketplaceClient(registry_url_or_path=getattr(args, "registry", None))
+    if args.subcommand == "search":
+        matches = client.search(query=args.query, force_refresh=args.refresh or None)
+        if args.json:
+            print(json.dumps([m.to_dict() if hasattr(m, "to_dict") else vars(m) for m in matches], indent=2, default=str))
+            return
+        for m in matches:
+            print(f"  {m.name:<20} [{m.subsystem}] v{m.version} — {m.description}")
+    elif args.subcommand == "info":
+        res = client.info(args.name, force_refresh=args.refresh or None)
+        print(json.dumps(res, indent=2, default=str))
+    elif args.subcommand == "install":
+        ok, msg = client.install(args.target, force=args.force)
+        if not ok:
+            print(f"[FAIL] {msg}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[OK] {msg}")
+    elif args.subcommand == "remove":
+        ok, msg = client.remove(args.name)
+        if not ok:
+            print(f"[FAIL] {msg}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[OK] {msg}")
+    elif args.subcommand == "verify":
+        rep = client.verify(args.target)
+        if args.json:
+            print(json.dumps(rep, indent=2, default=str))
+            return
+        for entry in rep:
+            print(f"  {entry.get('name'):<20} [{entry.get('status')}] sha_ok={entry.get('checksum_match')} safe={entry.get('security_safe')}")

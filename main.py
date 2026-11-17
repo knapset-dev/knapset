@@ -29,6 +29,8 @@ SUBCOMMANDS = {
     "rank": "Rank rows from a table using signed weights, formulas, and filters",
     "basket": "Pack optimal multi-item baskets under multi-resource limits (0/1 or bounded knapsack)",
     "solve": "Synthesize multi-slot combinations across tables/files with weights, limits, and AST rules",
+    "run": "Execute a saved Knapset v2 JSON/TOML preset (or installed preset name) with CLI overrides",
+    "preset": "Manage v2 presets: list, search, info, install, remove, verify",
     "domains": "List registered domain extensions (Layouts & Weights)",
     "modules": "Inspect pluggable modules across all 5 decoupled subsystems",
     "plugins": "Alias for 'modules'",
@@ -112,6 +114,8 @@ def print_help() -> None:
     print("  rank        Rank rows in a table using signed weights, formulas, and filters")
     print("  basket      Pack optimal multi-item baskets under multi-resource limits (knapsack)")
     print("  solve       Synthesize multi-slot combinations across tables/files with rules & limits")
+    print("  run         Execute a v2 preset (.json/.toml or installed name) with CLI overrides")
+    print("  preset      Manage v2 presets: list, search, info, install, remove, verify")
     print("  module      Package manager & dev tools: search, info, install, update, remove, new, verify, list, config")
     print("  modules     Inspect pluggable modules across all 5 decoupled subsystems (aliases: plugins)")
     print("  domains     List registered domain extensions and layouts (aliases: extensions)")
@@ -928,6 +932,12 @@ def main(argv: Optional[List[str]] = None) -> None:
         elif cmd == "solve":
             from v2_cli import run_solve
             run_solve(extra)
+        elif cmd == "run":
+            from v2_cli import run_run
+            run_run(extra)
+        elif cmd == "preset":
+            from v2_cli import run_preset
+            run_preset(extra)
         elif cmd in ("domains", "extensions"):
             _run_domains(extra)
         elif cmd == "sync":
