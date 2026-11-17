@@ -15,6 +15,7 @@ import argparse
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
@@ -422,7 +423,7 @@ class TuiSessionState:
         self.re_solve()
         self.status_message = f"Detached reference DB '{ref_key}'."
 
-    def adjust_weight(self, idx: int, delta: float) -> None:
+    def adjust_weight(self, idx: int, delta: float, auto_solve: bool = True) -> None:
         """Adjusts weight strength strictly within `[0.0, 1.0]` while preserving maximize/minimize direction."""
         if idx < 0 or idx >= len(self.weights):
             return
@@ -432,11 +433,12 @@ class TuiSessionState:
         new_mag = round(min(1.0, max(0.0, abs(val) + delta)), 2)
         self.weights[idx] = (expr, new_mag)
         self.dirty = True
-        self.re_solve()
+        if auto_solve:
+            self.re_solve()
         direction = "↓ min" if self.weight_dirs.get(expr) == "min" else "↑ max"
         self.status_message = f"{expr}: {new_mag:.2f} ({direction}) [0.00 .. 1.00]"
 
-    def toggle_weight_direction(self, idx: int) -> None:
+    def toggle_weight_direction(self, idx: int, auto_solve: bool = True) -> None:
         """Flips a weight between ↑ maximize and ↓ minimize without changing its `[0, 1]` magnitude."""
         if idx < 0 or idx >= len(self.weights):
             return
@@ -445,7 +447,8 @@ class TuiSessionState:
         self.weight_dirs[expr] = "max" if curr_min else "min"
         self.weights[idx] = (expr, round(min(1.0, abs(val)), 2))
         self.dirty = True
-        self.re_solve()
+        if auto_solve:
+            self.re_solve()
         arrow = "↓ min" if self.weight_dirs[expr] == "min" else "↑ max"
         self.status_message = f"{expr}: direction flipped -> {arrow}"
 
@@ -884,6 +887,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
         buf = list(initial)
         col_idx = 0
+        stdscr.timeout(-1)
         curses.curs_set(1)
         try:
             while True:
@@ -956,6 +960,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
         mh = min(h - 2, len(choices) + 5)
         my, mx = max(1, (h - mh) // 2), max(1, (w - mw) // 2)
         idx = 0
+        stdscr.timeout(-1)
         while True:
             _draw_box(stdscr, my, mx, mh, mw, title=title, active=True)
             inner_w = mw - 4
@@ -1404,8 +1409,25 @@ def run_curses_tui(state: TuiSessionState) -> None:
         left_cursor = 1
         left_scroll = 0
         right_scroll = 0
+        solve_pending = False
+        solve_due_at = 0.0
+        DEBOUNCE_SEC = 0.28
+
+        def _schedule_solve() -> None:
+            nonlocal solve_pending, solve_due_at
+            solve_pending = True
+            solve_due_at = time.monotonic() + DEBOUNCE_SEC
+
+        def _flush_pending_solve() -> None:
+            nonlocal solve_pending
+            if solve_pending:
+                state.re_solve()
+                solve_pending = False
 
         while True:
+            if solve_pending and time.monotonic() >= solve_due_at:
+                _flush_pending_solve()
+
             stdscr.erase()
             h, w = stdscr.getmaxyx()
             left_w = max(38, min(62, int(w * 0.46)))
@@ -1413,7 +1435,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
             right_w = max(24, w - right_x)
 
             dirty = "*" if state.dirty else ""
-            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}"
+            sync_tag = " │ ⏳ solving..." if solve_pending else ""
+            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}{sync_tag}"
             hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
             stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
             if w > len(hdr_left) + len(hdr_right) + 2:
@@ -1465,25 +1488,33 @@ def run_curses_tui(state: TuiSessionState) -> None:
             stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.color_pair(C_BAR) | curses.A_DIM)
             stdscr.refresh()
 
+            stdscr.timeout(50 if solve_pending else -1)
             ch = stdscr.getch()
+            if ch == curses.ERR:
+                continue
             if ch in (ord("q"), ord("Q")):
                 break
             if ch == 9:
                 focus_results = not focus_results
                 continue
             if ch in (ord("/"), ord("?")):
+                _flush_pending_solve()
                 _action_command_palette(stdscr)
                 continue
             if ch in (ord("o"), ord("O")):
+                _flush_pending_solve()
                 _action_open_db(stdscr)
                 continue
             if ch in (ord("p"), ord("P")):
+                _flush_pending_solve()
                 _action_pick_preset(stdscr)
                 continue
             if ch in (ord("h"), ord("H")):
+                solve_pending = False
                 state.cycle_profile()
                 continue
             if ch in (ord("m"), ord("M")):
+                solve_pending = False
                 state.cycle_mode()
                 continue
             if ch in (ord("e"), ord("E")):
@@ -1491,6 +1522,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
                 continue
             if ch in (ord("s"), ord("S")):
+                _flush_pending_solve()
                 _action_save_preference(stdscr)
                 continue
 
@@ -1504,7 +1536,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             left_cursor = clicked_idx
                             it = ws_items[left_cursor]
                             if it.kind == "weight" and mx >= left_w - 14:
-                                state.adjust_weight(it.index, -0.1 if mx < left_w - 7 else 0.1)
+                                state.adjust_weight(it.index, -0.1 if mx < left_w - 7 else 0.1, auto_solve=False)
+                                _schedule_solve()
                             elif bstate & (curses.BUTTON1_DOUBLE_CLICKED | curses.BUTTON1_CLICKED) and it.kind in ("action", "profile", "slot", "ref"):
                                 ch = 10
                     elif pane_y < my < pane_y + pane_h - 1 and mx >= right_x:
@@ -1537,19 +1570,24 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     left_cursor = nxt
             elif ch in (ord("+"), ord("="), curses.KEY_RIGHT):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, 0.1)
+                    state.adjust_weight(ws_items[left_cursor].index, 0.1, auto_solve=False)
+                    _schedule_solve()
             elif ch in (ord("-"), ord("_"), curses.KEY_LEFT):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, -0.1)
+                    state.adjust_weight(ws_items[left_cursor].index, -0.1, auto_solve=False)
+                    _schedule_solve()
             elif ch == ord("]"):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, 0.05)
+                    state.adjust_weight(ws_items[left_cursor].index, 0.05, auto_solve=False)
+                    _schedule_solve()
             elif ch == ord("["):
                 if ws_items[left_cursor].kind == "weight":
-                    state.adjust_weight(ws_items[left_cursor].index, -0.05)
+                    state.adjust_weight(ws_items[left_cursor].index, -0.05, auto_solve=False)
+                    _schedule_solve()
             elif ch in (ord("t"), ord("T"), ord(" ")):
                 if ws_items[left_cursor].kind == "weight":
-                    state.toggle_weight_direction(ws_items[left_cursor].index)
+                    state.toggle_weight_direction(ws_items[left_cursor].index, auto_solve=False)
+                    _schedule_solve()
             elif ch in (ord("d"), ord("D"), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
                 cur = ws_items[left_cursor]
                 if cur.kind == "weight":

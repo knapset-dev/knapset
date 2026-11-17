@@ -10,6 +10,7 @@ Implements the three core optimization modes:
 
 from __future__ import annotations
 
+import heapq
 import itertools
 import math
 import re
@@ -721,6 +722,8 @@ def solve_sets(
     max_cross_w = sum(abs(t.weight) for t in cross_slot_terms)
 
     feasible_sets: List[Tuple[Dict[str, Dict[str, Any]], float, Dict[str, float], Dict[str, float]]] = []
+    top_scores_heap: List[float] = []
+    cutoff_cap = max(top_n * 4, 24)
     seen_set_sigs = set()
     nodes = 0
     truncated = False
@@ -755,13 +758,15 @@ def solve_sets(
                 return
             seen_set_sigs.add(sig)
             feasible_sets.append((ordered_set, current_add_util, dict(current_slot_scores), metrics))
+            if len(top_scores_heap) < cutoff_cap:
+                heapq.heappush(top_scores_heap, current_add_util)
+            elif current_add_util > top_scores_heap[0]:
+                heapq.heapreplace(top_scores_heap, current_add_util)
             return
 
-        # Additive upper bound pruning when no cross-slot score terms can swing rankings above best sets
-        if not cross_slot_terms and len(feasible_sets) >= max(top_n * 8, 32):
-            cutoff_idx = max(top_n * 2 - 1, top_n - 1)
-            cutoff = sorted((x[1] for x in feasible_sets), reverse=True)[min(cutoff_idx, len(feasible_sets) - 1)]
-            if current_add_util + suffix_max_util[depth] + max_cross_w < cutoff - 1e-9:
+        # O(1) additive upper bound pruning via cached min-heap floor
+        if not cross_slot_terms and len(top_scores_heap) >= cutoff_cap:
+            if current_add_util + suffix_max_util[depth] + max_cross_w < top_scores_heap[0] - 1e-9:
                 return
 
         sname = search_order[depth]
