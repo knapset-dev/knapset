@@ -13,7 +13,13 @@ import unittest
 from pathlib import Path
 
 from preset_loader import load_preset
-from tui import TuiSessionState, _render_result_lines
+from tui import (
+    TuiSessionState,
+    _build_workspace_items,
+    _format_weight_bar,
+    _render_result_lines,
+    discover_local_data_files,
+)
 
 
 class TestTuiSessionState(unittest.TestCase):
@@ -82,10 +88,21 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertLess(top["slots"]["cpu"]["score"] / top["slots"]["gpu"]["ref"]["score"], 1.0)
             self.assertLessEqual(top["metrics"]["sum(price) <= 950"], 950.0)
 
-            # Verify result lines formatting with explain toggled
+            # Verify agy-style rounded solution cards, weight bars, workspace items, & file discovery
             state.explain = True
             rendered = _render_result_lines(state, 90)
-            self.assertTrue(any("Set #1" in line for line in rendered))
+            self.assertTrue(any("╭─ #1 │ Score" in line for line in rendered))
+            self.assertEqual(len(_format_weight_bar(0.5, width=8)), 8)
+            self.assertIn("█", _format_weight_bar(0.5, width=8))
+            self.assertIn("▓", _format_weight_bar(-0.5, width=8))
+
+            ws_items = _build_workspace_items(state)
+            self.assertTrue(any(it.action_id == "add_weight" for it in ws_items))
+            self.assertTrue(any(it.action_id == "add_constraint" for it in ws_items))
+            self.assertTrue(any(it.kind == "rule" for it in ws_items))
+            discovered_files = discover_local_data_files(root)
+            self.assertIn(db_path.resolve(), discovered_files)
+            self.assertIn(gpu_ref.resolve(), discovered_files)
 
             # Cycle modes cleanly
             state.cycle_mode()

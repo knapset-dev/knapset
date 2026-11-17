@@ -1,14 +1,12 @@
 """
-Knapset v2 Interactive Terminal UI (`ks tui`) using Python Standard Library `curses`.
+Knapset v2 Interactive Terminal Studio (`ks tui`) — Antigravity (`agy`) style.
 
-Features:
-- Load existing SQLite/CSV/JSON sources OR any installed/local v2 Preset
-- Attach and configure Reference DBs (--ref) with live match coverage preview
-- Browse discovered columns across all slots and references (`cpu.*`, `gpu.ref.*`)
-- Live `+`/`-` weight adjustments with instant re-solving
-- Interactive editor for custom formulas (`val = ref.score / price`), limits (`sum(price) <= 950`),
-  filters (`vram >= 12`), and cross-slot rules (`cpu.score / gpu.score < 1`)
-- Switch optimization modes (`solve` / `basket` / `rank`), toggle `--explain`, and save preset `.json`
+100% Python Standard Library (`curses`):
+- Rounded box-drawing cards (`╭─╮│╰─╯`) with cyan focus highlight and directional weight sliders
+- Single unified workspace (Weights, Formulas, Rules & Limits, Sources & Refs) navigable with ↑/↓ + Enter
+- `←`/`→` or `+`/`-` (and optional mouse clicks) adjust weights smoothly with live re-solving
+- `/` Command Palette modal (`/open`, `/ref`, `/preset`, `/profile`, `/weight`, `/formula`, `/rule`, `/limit`, `/mode`, `/explain`, `/save`)
+- Interactive File & Reference DB Browser, Preset Picker, and Tab-autocomplete Expression Composer
 """
 
 from __future__ import annotations
@@ -21,10 +19,12 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import parse_formulas, parse_weights
+from formula_engine import LimitSpec, RuleSpec, SafeExpression, parse_formulas, parse_weights
 from preset_loader import PresetConfig, discover_presets, resolve_preset, save_preset
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.registry import open_source
+
+_DATA_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".csv", ".tsv", ".json", ".jsonl", ".ndjson"}
 
 
 def _format_row_label(row: Dict[str, Any]) -> str:
@@ -90,11 +90,26 @@ def _suggest_weights_from_slots(slot_pools: Dict[str, List[Dict[str, Any]]], mod
     return picked or [("price", -0.5)]
 
 
+def discover_local_data_files(directory: Optional[Path] = None) -> List[Path]:
+    """Lists supported DB/CSV/JSON files in `directory` (excluding hidden/venv noise)."""
+    root = (directory or Path.cwd()).resolve()
+    files: List[Path] = []
+    try:
+        for item in sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
+            if item.name.startswith("."):
+                continue
+            if item.is_file() and item.suffix.lower() in _DATA_EXTENSIONS:
+                files.append(item)
+    except OSError:
+        pass
+    return files
+
+
 @dataclass
 class TuiSessionState:
-    """Headless reactive state backing the `curses` TUI (independently unit-testable)."""
+    """Headless reactive state backing the `agy`-style Knapset TUI."""
 
-    title: str = "Knapset v2 Interactive Studio"
+    title: str = "Knapset v2 Studio"
     preset_name: str = "custom"
     mode: str = "solve"
     profile: str = "custom"
@@ -115,7 +130,7 @@ class TuiSessionState:
     results: List[Dict[str, Any]] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
     ref_stats: Dict[str, str] = field(default_factory=dict)
-    status_message: str = "Ready. Use +/- on weights, 'a' to add formula/rule/limit, 's' to save preset."
+    status_message: str = "Use ↑↓ to select, ←/→ or +/- to slide weights, / for commands, ? for help."
     available_presets: Dict[str, PresetConfig] = field(default_factory=dict)
     active_preset_cfg: Optional[PresetConfig] = None
 
@@ -164,7 +179,7 @@ class TuiSessionState:
                     MatchSpec(left_field=lf, right_field=rf, strategy=strat, alias=alias, on_unmatched=on_unmatched),
                 )
                 rows = enr.rows
-                self.ref_stats[f"{slot_name}->{ref_key}"] = f"{enr.matched}/{enr.total} ({enr.match_rate * 100:.0f}%)"
+                self.ref_stats[f"{slot_name} -> {ref_key}"] = f"{enr.matched}/{enr.total} ({enr.match_rate * 100:.0f}%)"
 
             pools[slot_name] = rows
             prefix = f"{slot_name}." if len(self.sources) > 1 else ""
@@ -172,7 +187,6 @@ class TuiSessionState:
                 if c not in cols:
                     cols.append(c)
 
-        # Also include declared formula output column names
         for f_str in self.formulas:
             if "=" in f_str:
                 fname = f_str.split("=", 1)[0].strip()
@@ -207,7 +221,7 @@ class TuiSessionState:
 
         self._rebuild_columns_and_pools()
         self.re_solve()
-        self.status_message = f"Loaded preset '{cfg.name}' [profile={prof_key}, mode={self.mode}]."
+        self.status_message = f"Loaded preset '{cfg.name}' (profile: {prof_key}, mode: {self.mode})."
 
     def load_from_source(
         self,
@@ -223,14 +237,10 @@ class TuiSessionState:
         self.base_dir = p.parent
         self.active_preset_cfg = None
         self.preset_name = p.stem.lower().replace(" ", "_")
-        self.title = f"{p.name} Interactive Session"
+        self.title = f"{p.name}"
         self.profile = "custom"
 
-        if table:
-            tbl_names = [table]
-        else:
-            tbl_names = schema.table_names()
-
+        tbl_names = [table] if table else schema.table_names()
         eff_mode = mode or ("solve" if len(tbl_names) > 1 else "rank")
         self.mode = eff_mode
         self.sources = {}
@@ -252,7 +262,7 @@ class TuiSessionState:
         self.weights = _suggest_weights_from_slots(self.slot_pools, self.mode)
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Loaded '{p.name}' ({len(tbl_names)} table(s), mode={self.mode})."
+        self.status_message = f"Opened '{p.name}' ({len(tbl_names)} table(s), mode={self.mode})."
 
     def attach_reference(
         self,
@@ -266,15 +276,16 @@ class TuiSessionState:
         if slot_name not in self.sources:
             raise KeyError(f"Unknown slot '{slot_name}'.")
         rp = str(Path(ref_path).expanduser().resolve())
-        ref_src = open_source(rp)
-        ref_rows = ref_src.load_rows()
+        ref_rows = open_source(rp).load_rows()
         if not match_expr:
-            slot_rows = open_source(self.sources[slot_name]["source"]).load_rows(table=self.sources[slot_name].get("table"))
+            slot_cfg = self.sources[slot_name]
+            slot_src = str(slot_cfg["source"])
+            if not Path(slot_src).is_absolute() and not Path(slot_src).exists():
+                slot_src = str(self.base_dir / slot_src)
+            slot_rows = open_source(slot_src).load_rows(table=slot_cfg.get("table"))
             l_cols = [k for k in (slot_rows[0].keys() if slot_rows else []) if isinstance(slot_rows[0][k], str)]
             r_cols = [k for k in (ref_rows[0].keys() if ref_rows else []) if isinstance(ref_rows[0][k], str)]
-            lf = l_cols[0] if l_cols else "title"
-            rf = r_cols[0] if r_cols else "model"
-            match_expr = f"{lf}~{rf}"
+            match_expr = f"{l_cols[0] if l_cols else 'title'}~{r_cols[0] if r_cols else 'model'}"
         ref_key = f"{slot_name}_{alias}"
         self.references[ref_key] = {
             "source": rp,
@@ -283,9 +294,8 @@ class TuiSessionState:
             "alias": alias,
             "on_unmatched": on_unmatched,
         }
-        existing_refs = list(self.sources[slot_name].get("ref") or []) if isinstance(self.sources[slot_name].get("ref"), list) else (
-            [self.sources[slot_name]["ref"]] if self.sources[slot_name].get("ref") else []
-        )
+        raw_ref = self.sources[slot_name].get("ref")
+        existing_refs = list(raw_ref) if isinstance(raw_ref, list) else ([raw_ref] if raw_ref else [])
         if ref_key not in existing_refs:
             existing_refs.append(ref_key)
         self.sources[slot_name]["ref"] = existing_refs[0] if len(existing_refs) == 1 else existing_refs
@@ -293,7 +303,8 @@ class TuiSessionState:
         if rebuild:
             self._rebuild_columns_and_pools()
             self.re_solve()
-            self.status_message = f"Attached reference '{Path(rp).name}' to slot '{slot_name}' ({self.ref_stats.get(f'{slot_name}->{ref_key}', '')})."
+            cov = self.ref_stats.get(f"{slot_name} -> {ref_key}", "")
+            self.status_message = f"Linked reference '{Path(rp).name}' to {slot_name} ({cov})."
 
     def adjust_weight(self, idx: int, delta: float) -> None:
         if idx < 0 or idx >= len(self.weights):
@@ -303,11 +314,12 @@ class TuiSessionState:
         self.weights[idx] = (expr, new_val)
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Weight '{expr}' -> {new_val:+.2f}"
+        direction = "↑ maximize" if new_val > 0 else ("↓ minimize" if new_val < 0 else "· neutral")
+        self.status_message = f"{expr}: {new_val:+.2f} ({direction})"
 
     def add_or_update_weight(self, expr: str, weight: float) -> None:
         clean = expr.strip()
-        parse_weights([(f"{clean}:{weight}")])  # validates expression AST
+        parse_weights([f"{clean}:{weight}"])
         for i, (e, _) in enumerate(self.weights):
             if e == clean:
                 self.weights[i] = (clean, round(float(weight), 2))
@@ -316,7 +328,7 @@ class TuiSessionState:
             self.weights.append((clean, round(float(weight), 2)))
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Added weight '{clean}' = {weight:+.2f}"
+        self.status_message = f"Weight set: {clean} = {weight:+.2f}"
 
     def remove_weight(self, idx: int) -> None:
         if 0 <= idx < len(self.weights):
@@ -331,38 +343,43 @@ class TuiSessionState:
         self.dirty = True
         self._rebuild_columns_and_pools()
         self.re_solve()
-        self.status_message = f"Added formula '{formula_expr.strip()}'."
+        self.status_message = f"Added formula: {formula_expr.strip()}"
 
     def add_limit(self, limit_expr: str) -> None:
-        from formula_engine import LimitSpec
         LimitSpec.parse(limit_expr)
         self.limits.append(limit_expr.strip())
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Added limit '{limit_expr.strip()}'."
+        self.status_message = f"Added limit: {limit_expr.strip()}"
 
     def add_rule(self, rule_expr: str) -> None:
-        from formula_engine import RuleSpec
         RuleSpec.parse(rule_expr)
         self.rules.append(rule_expr.strip())
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Added rule '{rule_expr.strip()}'."
+        self.status_message = f"Added rule: {rule_expr.strip()}"
 
     def add_where(self, where_expr: str) -> None:
-        from formula_engine import SafeExpression
         SafeExpression(where_expr)
         self.where.append(where_expr.strip())
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Added filter '{where_expr.strip()}'."
+        self.status_message = f"Added filter: {where_expr.strip()}"
 
     def cycle_mode(self) -> None:
         order = ("solve", "basket", "rank") if len(self.slot_pools) > 1 else ("rank", "basket")
         curr_idx = order.index(self.mode) if self.mode in order else 0
         self.mode = order[(curr_idx + 1) % len(order)]
         self.re_solve()
-        self.status_message = f"Switched mode -> {self.mode}"
+        self.status_message = f"Mode switched to '{self.mode}'."
+
+    def cycle_profile(self) -> None:
+        if not self.active_preset_cfg or len(self.active_preset_cfg.profile_names()) <= 1:
+            return
+        names = self.active_preset_cfg.profile_names()
+        idx = names.index(self.profile) if self.profile in names else 0
+        nxt = names[(idx + 1) % len(names)]
+        self.load_from_preset(str(self.active_preset_cfg.source_path or self.active_preset_cfg.name), profile_name=nxt)
 
     def re_solve(self) -> None:
         try:
@@ -407,7 +424,7 @@ class TuiSessionState:
                 self.results = [s.to_dict() for s in sols]
                 self.meta = meta
         except Exception as exc:
-            self.status_message = f"Solve error: {exc}"
+            self.status_message = f"Check expression: {exc}"
 
     def export_preset(self, path: str | Path, preset_name: Optional[str] = None) -> Path:
         name = (preset_name or self.preset_name or "custom_preset").strip().lower().replace(" ", "_")
@@ -435,41 +452,145 @@ class TuiSessionState:
         )
         saved = save_preset(cfg, path, overwrite=True)
         self.dirty = False
-        self.status_message = f"Saved preset to {saved}"
+        self.status_message = f"Saved preset -> {saved.name}"
         return saved
 
 
+# ---------------------------------------------------------------------------
+# Pure formatting helpers (cleanly unit-testable without a TTY)
+# ---------------------------------------------------------------------------
+
+
+def _format_weight_bar(weight: float, width: int = 8) -> str:
+    mag = min(1.0, abs(weight))
+    filled = max(0, min(width, int(round(mag * width))))
+    if weight > 0:
+        return "█" * filled + "░" * (width - filled)
+    if weight < 0:
+        return "▓" * filled + "░" * (width - filled)
+    return "░" * width
+
+
+@dataclass
+class _WorkspaceItem:
+    kind: str  # "header" | "weight" | "limit" | "rule" | "formula" | "where" | "action" | "source" | "ref"
+    label: str
+    index: int = -1
+    action_id: str = ""
+    tone: str = "normal"  # "muted" | "pos" | "neg" | "accent" | "normal"
+
+
+def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
+    items: List[_WorkspaceItem] = []
+
+    items.append(_WorkspaceItem(kind="header", label="WEIGHTS  (←/→ or -/+ to tune)", tone="accent"))
+    if state.weights:
+        for idx, (expr, val) in enumerate(state.weights):
+            bar = _format_weight_bar(val, width=7)
+            arrow = "↑ max" if val > 0 else ("↓ min" if val < 0 else "· off")
+            tone = "pos" if val > 0 else ("neg" if val < 0 else "muted")
+            items.append(
+                _WorkspaceItem(
+                    kind="weight",
+                    index=idx,
+                    label=f" {expr:<18} [{bar}] {val:+5.2f} {arrow}",
+                    tone=tone,
+                )
+            )
+    else:
+        items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  (no weights yet — press Enter to add)", tone="muted"))
+    items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  + Add Weight / Score Expression...", tone="accent"))
+
+    items.append(_WorkspaceItem(kind="header", label="RULES, LIMITS & FORMULAS", tone="accent"))
+    for idx, lim in enumerate(state.limits):
+        items.append(_WorkspaceItem(kind="limit", index=idx, label=f" Limit    {lim}"))
+    for idx, rule in enumerate(state.rules):
+        items.append(_WorkspaceItem(kind="rule", index=idx, label=f" Rule     {rule}"))
+    for idx, f_str in enumerate(state.formulas):
+        items.append(_WorkspaceItem(kind="formula", index=idx, label=f" Formula  {f_str}"))
+    for idx, w_str in enumerate(state.where):
+        items.append(_WorkspaceItem(kind="where", index=idx, label=f" Filter   {w_str}"))
+    items.append(_WorkspaceItem(kind="action", action_id="add_constraint", label="  + Add Rule / Formula / Limit / Filter...", tone="accent"))
+
+    items.append(_WorkspaceItem(kind="header", label="DATA & PRESET", tone="accent"))
+    slots_txt = ", ".join(state.sources.keys()) if state.sources else "none"
+    items.append(_WorkspaceItem(kind="action", action_id="open_db", label=f" Main DB  {slots_txt}  [Enter: Open]", tone="normal"))
+    if state.references:
+        for rk, rcfg in state.references.items():
+            ref_name = Path(str(rcfg.get("source", ""))).name
+            items.append(_WorkspaceItem(kind="action", action_id="attach_ref", label=f" Ref DB   {ref_name} ({rcfg.get('match')})", tone="normal"))
+    else:
+        items.append(_WorkspaceItem(kind="action", action_id="attach_ref", label="  + Attach Reference DB (--ref)...", tone="accent"))
+    items.append(_WorkspaceItem(kind="action", action_id="pick_preset", label=f" Preset   {state.preset_name} ({state.profile})  [Enter: Switch]", tone="normal"))
+    items.append(_WorkspaceItem(kind="action", action_id="save_preset", label="  Save Customized Preset (.json)...", tone="accent"))
+    return items
+
+
 def _render_result_lines(state: TuiSessionState, max_width: int) -> List[str]:
+    """Formats top ranked results/baskets/sets into rounded `agy`-style summary lines."""
     lines: List[str] = []
+    if not state.slot_pools:
+        lines.extend(
+            [
+                "No database loaded yet.",
+                "",
+                "Quick ways to start:",
+                "  • Press `o` to browse local .db / .csv / .json files",
+                "  • Press `p` to pick a preset (e.g. pc_build)",
+                "  • Press `/` to open the command palette",
+            ]
+        )
+        return [ln[:max_width] for ln in lines]
+
     if not state.results:
-        lines.append("(No feasible solutions match current weights/limits/rules.)")
-        return lines
+        lines.extend(
+            [
+                "No combinations satisfy all active rules & limits.",
+                "",
+                "Try relaxing a Limit (e.g. budget) or removing a strict Rule.",
+            ]
+        )
+        return [ln[:max_width] for ln in lines]
+
+    card_w = max(24, max_width - 1)
+    inner_w = card_w - 4
 
     if state.mode == "rank":
-        for idx, r in enumerate(state.results, 1):
+        for idx, r in enumerate(state.results[:12], 1):
             label = _format_row_label(r["row"])
-            lines.append(f"{idx:>2}. [{r['score']:5.1f}] {label}"[:max_width])
+            lines.append(f"  {idx:>2}. [{r['score']:5.1f}] {label}"[:max_width])
             if state.explain and r.get("breakdown"):
-                bd_str = " | ".join(f"{b['expression']}:{b['contribution']:.1f}" for b in r["breakdown"])
-                lines.append(f"    {bd_str}"[:max_width])
-    elif state.mode == "basket":
-        for idx, sol in enumerate(state.results, 1):
-            lim = ", ".join(f"{k}={v:g}" for k, v in (sol.get("metrics") or {}).items())
-            lines.append(f"Basket #{idx} [U={sol['total_score']:.1f}] {lim}"[:max_width])
-            for it in sol["items"][:5]:
+                bd = "  ·  ".join(f"{b['expression']}: +{b['contribution']:.1f}" for b in r["breakdown"])
+                lines.append(f"      {bd}"[:max_width])
+        return lines
+
+    for idx, sol in enumerate(state.results, 1):
+        score = sol.get("total_score", 0.0)
+        lim_str = " · ".join(f"{k.split('<=')[0].strip()}={v:g}" for k, v in (sol.get("metrics") or {}).items())
+        head = f" #{idx} │ Score {score:.1f} " + (f"│ {lim_str} " if lim_str else "")
+        dash_fill = max(1, card_w - len(head) - 3)
+        lines.append(f"╭─{head}{'─' * dash_fill}╮"[:max_width])
+
+        if state.mode == "basket":
+            for it in sol["items"]:
                 q = f" x{it['count']}" if it["count"] > 1 else ""
-                lines.append(f"  * {_format_row_label(it['row'])}{q} ({it['item_score']:.1f})"[:max_width])
-    else:
-        for idx, sol in enumerate(state.results, 1):
-            lim = ", ".join(f"{k}={v:g}" for k, v in (sol.get("metrics") or {}).items())
-            lines.append(f"Set #{idx} [Score={sol['total_score']:.1f}] {lim}"[:max_width])
+                row_txt = f"• {_format_row_label(it['row'])}{q}  ({it['item_score']:.1f})"
+                lines.append(f"│ {row_txt:<{inner_w}.{inner_w}} │"[:max_width])
+        else:
             for sname, item in sol["slots"].items():
-                p_str = f" ({item['price']})" if "price" in item else ""
-                lines.append(f"  * {sname}: {_format_row_label(item)}{p_str}"[:max_width])
+                p_hint = f"  ({item['price']})" if "price" in item else ""
+                row_txt = f"{sname:<8} {_format_row_label(item)}{p_hint}"
+                lines.append(f"│ {row_txt:<{inner_w}.{inner_w}} │"[:max_width])
             if state.explain and sol.get("breakdown"):
-                bd_str = " | ".join(f"{b['expression']}:{b['contribution']:.1f}" for b in sol["breakdown"])
-                lines.append(f"    {bd_str}"[:max_width])
+                bd = " | ".join(f"{b['expression']}:+{b['contribution']:.1f}" for b in sol["breakdown"])
+                lines.append(f"│ {bd:<{inner_w}.{inner_w}} │"[:max_width])
+        lines.append(f"╰{'─' * (card_w - 2)}╯"[:max_width])
     return lines
+
+
+# ---------------------------------------------------------------------------
+# Antigravity (`agy`) style `curses` interactive loop & floating modals
+# ---------------------------------------------------------------------------
 
 
 def run_curses_tui(state: TuiSessionState) -> None:
@@ -481,200 +602,644 @@ def run_curses_tui(state: TuiSessionState) -> None:
             "On Windows install `windows-curses` or use `ks serve` for the interactive Web Studio."
         ) from exc
 
-    TABS = ("Weights", "Formulas", "Limits/Rules", "Sources/Refs", "Presets")
+    C_CYAN, C_GREEN, C_RED, C_AMBER, C_DIM = 1, 2, 3, 4, 5
 
-    def _prompt_input(stdscr: Any, label: str, hint: str = "") -> Optional[str]:
+    def _tone_attr(tone: str, selected: bool = False) -> int:
+        base = {
+            "accent": curses.color_pair(C_CYAN) | curses.A_BOLD,
+            "pos": curses.color_pair(C_GREEN),
+            "neg": curses.color_pair(C_RED),
+            "muted": curses.color_pair(C_DIM) | curses.A_DIM,
+        }.get(tone, curses.A_NORMAL)
+        return (base | curses.A_REVERSE) if selected else base
+
+    def _draw_box(stdscr: Any, y: int, x: int, h: int, w: int, title: str = "", active: bool = False) -> None:
+        if h < 3 or w < 6:
+            return
+        attr = curses.color_pair(C_CYAN) if active else curses.color_pair(C_DIM)
+        top_t = f" {title} " if title else ""
+        top_fill = max(0, w - 3 - len(top_t))
+        stdscr.addnstr(y, x, f"╭─{top_t}{'─' * top_fill}╮", w, attr | (curses.A_BOLD if active else 0))
+        for r in range(1, h - 1):
+            stdscr.addnstr(y + r, x, "│", 1, attr)
+            stdscr.addnstr(y + r, x + 1, " " * max(0, w - 2), max(0, w - 2))
+            stdscr.addnstr(y + r, x + w - 1, "│", 1, attr)
+        stdscr.addnstr(y + h - 1, x, f"╰{'─' * max(0, w - 2)}╯", w, attr)
+
+    def _modal_text_input(
+        stdscr: Any,
+        title: str,
+        prompt: str,
+        initial: str = "",
+        suggestions: Optional[List[str]] = None,
+        examples: Optional[List[str]] = None,
+        validator: Optional[Any] = None,
+    ) -> Optional[str]:
         h, w = stdscr.getmaxyx()
-        curses.echo()
+        mw = min(max(50, int(w * 0.72)), max(40, w - 4))
+        sugg = list(suggestions or [])
+        ex = list(examples or [])
+        mh = min(h - 2, 8 + (min(4, len(sugg)) + 1 if sugg else 0) + (min(3, len(ex)) + 1 if ex else 0))
+        my, mx = max(1, (h - mh) // 2), max(1, (w - mw) // 2)
+
+        buf = list(initial)
+        col_idx = 0
         curses.curs_set(1)
         try:
-            if hint and h >= 5:
-                stdscr.move(h - 3, 0)
-                stdscr.clrtoeol()
-                stdscr.addnstr(h - 3, 1, hint, w - 2)
-            stdscr.move(h - 2, 0)
-            stdscr.clrtoeol()
-            stdscr.addnstr(h - 2, 1, label, w - 2)
-            stdscr.refresh()
-            raw = stdscr.getstr(h - 2, min(len(label) + 2, w - 4), max(16, w - len(label) - 4))
-            text = raw.decode("utf-8", errors="replace").strip()
-            return text or None
+            while True:
+                _draw_box(stdscr, my, mx, mh, mw, title=title, active=True)
+                inner_w = mw - 4
+                row_y = my + 1
+                stdscr.addnstr(row_y, mx + 2, prompt, inner_w, curses.A_BOLD)
+                row_y += 1
+
+                text = "".join(buf)
+                shown = text[-(inner_w - 2) :] if len(text) >= inner_w - 1 else text
+                stdscr.addnstr(row_y, mx + 2, f"> {shown:<{inner_w - 2}}", inner_w, curses.A_REVERSE)
+                input_row, input_col = row_y, mx + 4 + min(len(shown), inner_w - 3)
+                row_y += 1
+
+                if validator and text.strip():
+                    try:
+                        validator(text.strip())
+                        stdscr.addnstr(row_y, mx + 2, "✓ Looks valid", inner_w, curses.color_pair(C_GREEN))
+                    except Exception as exc:
+                        stdscr.addnstr(row_y, mx + 2, f"! {exc}", inner_w, curses.color_pair(C_AMBER))
+                else:
+                    stdscr.addnstr(row_y, mx + 2, "Enter: Confirm · Esc: Cancel" + (" · Tab: Insert field" if sugg else ""), inner_w, curses.A_DIM)
+                row_y += 1
+
+                if sugg and row_y < my + mh - 2:
+                    stdscr.addnstr(row_y, mx + 2, "Available fields (↑/↓ or Tab to insert):", inner_w, curses.color_pair(C_CYAN))
+                    row_y += 1
+                    chips = []
+                    for i, c in enumerate(sugg[:12]):
+                        chips.append(f"[{c}]" if i == col_idx else c)
+                    line = "  ".join(chips)
+                    stdscr.addnstr(row_y, mx + 2, line, inner_w)
+                    row_y += 1
+
+                if ex and row_y < my + mh - 1:
+                    stdscr.addnstr(row_y, mx + 2, "Examples: " + "  |  ".join(ex[:2]), inner_w, curses.A_DIM)
+
+                stdscr.move(input_row, input_col)
+                stdscr.refresh()
+                ch = stdscr.getch()
+                if ch == 27:  # Esc
+                    return None
+                if ch in (10, 13, curses.KEY_ENTER):
+                    res = "".join(buf).strip()
+                    return res or None
+                if ch in (curses.KEY_BACKSPACE, 127, 8):
+                    if buf:
+                        buf.pop()
+                elif ch == 9 and sugg:  # Tab inserts highlighted field
+                    token = sugg[col_idx % len(sugg)]
+                    if buf and buf[-1].isalnum():
+                        buf.append(" ")
+                    buf.extend(list(token))
+                elif ch == curses.KEY_RIGHT and sugg:
+                    col_idx = (col_idx + 1) % len(sugg)
+                elif ch == curses.KEY_LEFT and sugg:
+                    col_idx = (col_idx - 1) % len(sugg)
+                elif 32 <= ch <= 126:
+                    buf.append(chr(ch))
         finally:
-            curses.noecho()
             curses.curs_set(0)
 
-    def _left_items(tab_idx: int) -> List[str]:
-        if tab_idx == 0:
-            return [f"{expr:<24} {w:+6.2f}" for expr, w in state.weights] or ["(none — press 'a' to add weight)"]
-        if tab_idx == 1:
-            return [f"formula: {f}" for f in state.formulas] or ["(none — press 'a' to add formula)"]
-        if tab_idx == 2:
-            items = [f"[limit] {l}" for l in state.limits]
-            items.extend(f"[rule ] {r}" for r in state.rules)
-            items.extend(f"[where] {w}" for w in state.where)
-            return items or ["(none — press 'a' to add limit, rule, or filter)"]
-        if tab_idx == 3:
-            rows = [f"[slot] {s}: {cfg.get('source')} ({cfg.get('table') or 'default'})" for s, cfg in state.sources.items()]
-            for rk, rcfg in state.references.items():
-                rows.append(f"[ref ] {rk}: {rcfg.get('source')} [{rcfg.get('match')}]")
-            return rows or ["(no source loaded — press 'a' to open DB/CSV)"]
+    def _modal_picker(stdscr: Any, title: str, choices: List[Tuple[str, str]], hint: str = "↑↓ Move · Enter Select · Esc Cancel") -> Optional[int]:
+        if not choices:
+            return None
+        h, w = stdscr.getmaxyx()
+        mw = min(max(52, int(w * 0.68)), max(36, w - 4))
+        mh = min(h - 2, len(choices) + 5)
+        my, mx = max(1, (h - mh) // 2), max(1, (w - mw) // 2)
+        idx = 0
+        while True:
+            _draw_box(stdscr, my, mx, mh, mw, title=title, active=True)
+            inner_w = mw - 4
+            vis = mh - 4
+            top_off = max(0, idx - vis + 1)
+            for r in range(vis):
+                ci = top_off + r
+                if ci >= len(choices):
+                    break
+                name, desc = choices[ci]
+                row_txt = f"{name:<22} {desc}" if desc else name
+                attr = (curses.color_pair(C_CYAN) | curses.A_REVERSE) if ci == idx else curses.A_NORMAL
+                stdscr.addnstr(my + 1 + r, mx + 2, row_txt.ljust(inner_w)[:inner_w], inner_w, attr)
+            stdscr.addnstr(my + mh - 2, mx + 2, hint, inner_w, curses.A_DIM)
+            stdscr.refresh()
+            ch = stdscr.getch()
+            if ch in (27, ord("q")):
+                return None
+            if ch == curses.KEY_UP:
+                idx = max(0, idx - 1)
+            elif ch == curses.KEY_DOWN:
+                idx = min(len(choices) - 1, idx + 1)
+            elif ch in (10, 13, curses.KEY_ENTER):
+                return idx
+
+    def _action_open_db(stdscr: Any) -> None:
+        curr_dir = Path.cwd()
+        while True:
+            entries: List[Tuple[str, str, Optional[Path]]] = [("✎ Enter path manually...", "type any .db / .csv / .json path", None)]
+            if curr_dir.parent != curr_dir:
+                entries.append(("../", "parent folder", curr_dir.parent))
+            try:
+                children = sorted(curr_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except OSError:
+                children = []
+            for p in children:
+                if p.name.startswith("."):
+                    continue
+                if p.is_dir():
+                    entries.append((f"{p.name}/", "folder", p))
+                elif p.suffix.lower() in _DATA_EXTENSIONS:
+                    entries.append((p.name, f"{p.suffix.lstrip('.').upper()} dataset", p))
+
+            pick = _modal_picker(stdscr, f"Open Data Source ({curr_dir.name})", [(a, b) for a, b, _ in entries])
+            if pick is None:
+                return
+            _, _, target = entries[pick]
+            if target is None:
+                manual = _modal_text_input(stdscr, "Open Data Source", "Enter file path (.db / .csv / .tsv / .json / .jsonl):")
+                if manual:
+                    try:
+                        state.load_from_source(manual)
+                    except Exception as exc:
+                        state.status_message = f"Could not open '{manual}': {exc}"
+                return
+            if target.is_dir():
+                curr_dir = target
+                continue
+            try:
+                state.load_from_source(str(target))
+            except Exception as exc:
+                state.status_message = f"Could not open '{target.name}': {exc}"
+            return
+
+    def _action_attach_ref(stdscr: Any) -> None:
+        if not state.sources:
+            state.status_message = "Open a Main DB first before attaching a Reference DB."
+            return
+        slots = list(state.sources.keys())
+        target_slot = slots[0]
+        if len(slots) > 1:
+            s_pick = _modal_picker(stdscr, "Select Slot to Enrich with Reference DB", [(s, str(state.sources[s].get("source", ""))) for s in slots])
+            if s_pick is None:
+                return
+            target_slot = slots[s_pick]
+        local_files = discover_local_data_files(state.base_dir)
+        choices = [("✎ Enter reference path manually...", "CSV / SQLite / JSON benchmark or price sheet")] + [
+            (f.name, "local file") for f in local_files
+        ]
+        pick = _modal_picker(stdscr, f"Attach Reference DB -> {target_slot}", choices)
+        if pick is None:
+            return
+        if pick == 0:
+            ref_path = _modal_text_input(stdscr, "Reference DB Path", "Path to Reference DB (.csv / .db / .json):")
+        else:
+            ref_path = str(local_files[pick - 1])
+        if not ref_path:
+            return
+        match_in = _modal_text_input(
+            stdscr,
+            "Match Expression",
+            "How to match candidate -> reference (e.g. 'title~model' for fuzzy token, 'id=id' for exact):",
+            initial="title~model",
+        )
+        try:
+            state.attach_reference(target_slot, ref_path, match_expr=match_in)
+        except Exception as exc:
+            state.status_message = f"Reference attach failed: {exc}"
+
+    def _action_pick_preset(stdscr: Any) -> None:
         state.refresh_discovered_presets()
-        return [f"{p.name} ({p.mode}) - {p.title}" for p in state.available_presets.values()] or ["(no presets found)"]
+        if not state.available_presets:
+            path_in = _modal_text_input(stdscr, "Load Preset File", "No presets installed in search dirs. Enter preset .json path:")
+            if path_in:
+                try:
+                    state.load_from_preset(path_in)
+                except Exception as exc:
+                    state.status_message = f"Preset error: {exc}"
+            return
+        presets = list(state.available_presets.values())
+        choices = [(p.name, f"[{p.mode}] {p.title} (profiles: {', '.join(p.profile_names())})") for p in presets]
+        choices.append(("✎ Load preset file path...", "open .json/.toml file"))
+        pick = _modal_picker(stdscr, "Choose Preset", choices)
+        if pick is None:
+            return
+        if pick == len(presets):
+            path_in = _modal_text_input(stdscr, "Load Preset File", "Enter preset .json/.toml file path:")
+            if path_in:
+                try:
+                    state.load_from_preset(path_in)
+                except Exception as exc:
+                    state.status_message = f"Preset error: {exc}"
+            return
+        chosen = presets[pick]
+        prof_names = chosen.profile_names()
+        chosen_prof = prof_names[0] if prof_names else None
+        if len(prof_names) > 1:
+            p_pick = _modal_picker(stdscr, f"Choose Profile for '{chosen.name}'", [(n, "") for n in prof_names])
+            if p_pick is not None:
+                chosen_prof = prof_names[p_pick]
+        try:
+            state.load_from_preset(str(chosen.source_path or chosen.name), profile_name=chosen_prof)
+        except Exception as exc:
+            state.status_message = f"Failed loading preset: {exc}"
+
+    def _action_add_weight(stdscr: Any) -> None:
+        expr = _modal_text_input(
+            stdscr,
+            "Add Preference Weight",
+            "Column or expression to prefer (e.g. 'ref.score', 'price', 'cpu.score / gpu.score'):",
+            suggestions=state.available_columns,
+            examples=["gpu.ref.score", "cpu.score / gpu.score"],
+            validator=SafeExpression,
+        )
+        if not expr:
+            return
+        w_str = _modal_text_input(
+            stdscr,
+            "Weight Direction & Strength",
+            f"Enter weight for '{expr}' (+ maximizes, - minimizes, e.g. 0.5 or -0.4):",
+            initial="0.5",
+        )
+        if not w_str:
+            return
+        try:
+            state.add_or_update_weight(expr, float(w_str))
+        except Exception as exc:
+            state.status_message = f"Invalid weight: {exc}"
+
+    def _action_add_constraint(stdscr: Any) -> None:
+        kinds = [
+            ("Rule     (cross-slot compatibility)", "e.g. cpu.socket == mobo.socket or cpu.score / gpu.score < 1"),
+            ("Limit    (aggregate cap / floor)", "e.g. sum(price) <= 950 or count <= 5"),
+            ("Formula  (derived computed column)", "e.g. deal_pct = (ref.msrp - price) / ref.msrp * 100"),
+            ("Filter   (row pre-filter)", "e.g. price <= 600 and vram >= 8"),
+        ]
+        pick = _modal_picker(stdscr, "What would you like to add?", kinds)
+        if pick is None:
+            return
+        try:
+            if pick == 0:
+                val = _modal_text_input(
+                    stdscr,
+                    "Add Compatibility Rule",
+                    "Write boolean rule expression:",
+                    suggestions=state.available_columns,
+                    examples=["cpu.socket == mobo.socket", "cpu.score / gpu.score < 1"],
+                    validator=RuleSpec.parse,
+                )
+                if val:
+                    state.add_rule(val)
+            elif pick == 1:
+                val = _modal_text_input(
+                    stdscr,
+                    "Add Resource Limit",
+                    "Write aggregate limit expression:",
+                    suggestions=state.available_columns,
+                    examples=["sum(price) <= 950", "count <= 4"],
+                    validator=LimitSpec.parse,
+                )
+                if val:
+                    state.add_limit(val)
+            elif pick == 2:
+                val = _modal_text_input(
+                    stdscr,
+                    "Add Derived Formula",
+                    "Write 'column_name = expression':",
+                    suggestions=state.available_columns,
+                    examples=["val_per_dollar = ref.score / price"],
+                    validator=lambda s: parse_formulas([s]),
+                )
+                if val:
+                    state.add_formula(val)
+            elif pick == 3:
+                val = _modal_text_input(
+                    stdscr,
+                    "Add Row Filter (--where)",
+                    "Write filter predicate:",
+                    suggestions=state.available_columns,
+                    examples=["price <= 600"],
+                    validator=SafeExpression,
+                )
+                if val:
+                    state.add_where(val)
+        except Exception as exc:
+            state.status_message = f"Invalid expression: {exc}"
+
+    def _action_command_palette(stdscr: Any) -> None:
+        cmds = [
+            ("/open", "Open SQLite / CSV / JSON database"),
+            ("/ref", "Attach a Reference DB (--ref)"),
+            ("/preset", "Switch preset or profile"),
+            ("/weight", "Add a weighted column or ratio expression"),
+            ("/rule", "Add constraint or formula (rule / limit / formula / filter)"),
+            ("/mode", "Switch mode (solve / basket / rank)"),
+            ("/explain", "Toggle normalized score breakdown"),
+            ("/save", "Save customized preset to .json"),
+            ("/help", "Show keyboard & mouse help"),
+        ]
+        pick = _modal_picker(stdscr, "/ Command Palette", cmds)
+        if pick is None:
+            return
+        cmd = cmds[pick][0]
+        if cmd == "/open":
+            _action_open_db(stdscr)
+        elif cmd == "/ref":
+            _action_attach_ref(stdscr)
+        elif cmd == "/preset":
+            _action_pick_preset(stdscr)
+        elif cmd == "/weight":
+            _action_add_weight(stdscr)
+        elif cmd == "/rule":
+            _action_add_constraint(stdscr)
+        elif cmd == "/mode":
+            state.cycle_mode()
+        elif cmd == "/explain":
+            state.explain = not state.explain
+            state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
+        elif cmd == "/save":
+            out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
+            if out_p:
+                try:
+                    state.export_preset(out_p)
+                except Exception as exc:
+                    state.status_message = f"Save failed: {exc}"
+        elif cmd == "/help":
+            _modal_picker(
+                stdscr,
+                "Knapset v2 TUI Controls",
+                [
+                    ("↑ / ↓", "Move selection in active pane"),
+                    ("← / → or - / +", "Adjust weight (-0.10 / +0.10; [ / ] for ±0.05)"),
+                    ("Enter", "Open action / add item / toggle selection"),
+                    ("Tab", "Switch focus between Controls and Results"),
+                    ("d / Backspace", "Delete highlighted weight, limit, rule, formula, or filter"),
+                    ("/", "Open Command Palette (/open, /ref, /preset, /weight, ...)"),
+                    ("m / p / o / e / s", "Mode / Preset / Open DB / Explain / Save preset"),
+                    ("q", "Quit TUI"),
+                ],
+                hint="Press Esc or Enter to close",
+            )
+
+    def _run_welcome_if_empty(stdscr: Any) -> None:
+        if state.slot_pools:
+            return
+        state.refresh_discovered_presets()
+        local_files = discover_local_data_files()
+        choices: List[Tuple[str, str, Tuple[str, str]]] = []
+        for p in state.available_presets.values():
+            choices.append((f"Preset: {p.name}", f"[{p.mode}] {p.title}", ("preset", str(p.source_path or p.name))))
+        for f in local_files[:8]:
+            choices.append((f"File: {f.name}", f"{f.suffix.lstrip('.').upper()} in current folder", ("file", str(f))))
+        choices.append(("Browse folders...", "choose any .db / .csv / .json file", ("browse", "")))
+        if not choices:
+            return
+        pick = _modal_picker(
+            stdscr,
+            "◈ Welcome to Knapset v2 — Pick a DB or Preset to begin",
+            [(a, b) for a, b, _ in choices],
+            hint="↑↓ Choose · Enter Open · Esc Stay in Workspace",
+        )
+        if pick is None:
+            return
+        kind, val = choices[pick][2]
+        if kind == "preset":
+            try:
+                state.load_from_preset(val)
+            except Exception as exc:
+                state.status_message = f"Preset error: {exc}"
+        elif kind == "file":
+            try:
+                state.load_from_source(val)
+            except Exception as exc:
+                state.status_message = f"Open error: {exc}"
+        else:
+            _action_open_db(stdscr)
 
     def _loop(stdscr: Any) -> None:
+        if hasattr(curses, "set_escdelay"):
+            curses.set_escdelay(25)
         curses.curs_set(0)
         stdscr.keypad(True)
+        try:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+        except Exception:
+            pass
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
-            curses.init_pair(1, curses.COLOR_CYAN, -1)
-            curses.init_pair(2, curses.COLOR_GREEN, -1)
-            curses.init_pair(3, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
+            curses.init_pair(C_GREEN, curses.COLOR_GREEN, -1)
+            curses.init_pair(C_RED, curses.COLOR_RED, -1)
+            curses.init_pair(C_AMBER, curses.COLOR_YELLOW, -1)
+            curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
 
-        tab_idx = 0
-        cursor = 0
+        _run_welcome_if_empty(stdscr)
+
+        focus_results = False
+        left_cursor = 1
+        left_scroll = 0
+        right_scroll = 0
 
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
-            left_w = max(32, int(w * 0.48))
+            left_w = max(36, min(58, int(w * 0.45)))
             right_x = left_w + 1
-            right_w = max(20, w - right_x - 1)
+            right_w = max(24, w - right_x)
 
-            dirty_mark = "*" if state.dirty else ""
-            hdr = f" Knapset v2 TUI │ mode={state.mode} │ preset={state.preset_name}{dirty_mark} │ results={len(state.results)} "
-            stdscr.addnstr(0, 0, hdr.ljust(w), w - 1, curses.A_REVERSE)
+            # Top Antigravity-style minimal header
+            dirty = "*" if state.dirty else ""
+            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} ({state.profile})"
+            hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
+            stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
+            if w > len(hdr_left) + len(hdr_right) + 2:
+                stdscr.addnstr(0, w - len(hdr_right) - 1, hdr_right, len(hdr_right), curses.A_DIM)
 
-            tab_line = "  ".join(f"[{i + 1}:{t}]" if i == tab_idx else f" {i + 1}:{t} " for i, t in enumerate(TABS))
-            stdscr.addnstr(1, 0, tab_line, left_w)
-            stdscr.addnstr(1, right_x, "Live Top Solutions" + (" [EXPLAIN]" if state.explain else ""), right_w, curses.A_BOLD)
+            pane_y = 1
+            pane_h = max(6, h - 3)
+            inner_h = pane_h - 2
 
-            items = _left_items(tab_idx)
-            cursor = max(0, min(cursor, max(0, len(items) - 1)))
-            body_rows = max(4, h - 5)
+            # Left panel: Unified interactive controls
+            _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Tune Preferences & Constraints", active=not focus_results)
+            ws_items = _build_workspace_items(state)
+            left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
+            if ws_items and ws_items[left_cursor].kind == "header":
+                if left_cursor + 1 < len(ws_items):
+                    left_cursor += 1
+            if left_cursor < left_scroll:
+                left_scroll = left_cursor
+            elif left_cursor >= left_scroll + inner_h:
+                left_scroll = left_cursor - inner_h + 1
 
-            for r in range(body_rows):
-                y = 2 + r
-                if r < len(items):
-                    attr = curses.A_REVERSE if r == cursor else curses.A_NORMAL
-                    stdscr.addnstr(y, 1, items[r], left_w - 2, attr)
-                if w > left_w + 3:
-                    stdscr.addnstr(y, left_w, "|", 1)
+            for r in range(inner_h):
+                idx = left_scroll + r
+                if idx >= len(ws_items):
+                    break
+                it = ws_items[idx]
+                selected = (not focus_results) and (idx == left_cursor)
+                attr = _tone_attr(it.tone, selected=selected)
+                line_text = it.label.ljust(left_w - 3)[: left_w - 3]
+                stdscr.addnstr(pane_y + 1 + r, 2, line_text, left_w - 3, attr)
 
-            res_lines = _render_result_lines(state, right_w)
-            for r in range(min(body_rows, len(res_lines))):
-                stdscr.addnstr(2 + r, right_x, res_lines[r], right_w)
+            # Right panel: Rounded solution cards
+            ex_tag = " · Explain ON" if state.explain else ""
+            _draw_box(stdscr, pane_y, right_x, pane_h, right_w, title=f"Top Solutions ({state.mode}){ex_tag}", active=focus_results)
+            res_lines = _render_result_lines(state, right_w - 3)
+            max_r_scroll = max(0, len(res_lines) - inner_h)
+            right_scroll = max(0, min(right_scroll, max_r_scroll))
+            for r in range(inner_h):
+                r_idx = right_scroll + r
+                if r_idx >= len(res_lines):
+                    break
+                txt = res_lines[r_idx]
+                attr = curses.color_pair(C_GREEN) if txt.startswith("╭─") else (curses.A_DIM if txt.startswith("╰") else curses.A_NORMAL)
+                stdscr.addnstr(pane_y + 1 + r, right_x + 2, txt, right_w - 3, attr)
 
-            col_hint = "Cols: " + ", ".join(state.available_columns[:10])
-            if h >= 5:
-                stdscr.addnstr(h - 3, 1, col_hint, w - 2, curses.A_DIM)
-            stdscr.addnstr(h - 2, 1, state.status_message, w - 2)
-            keys = "q:Quit 1-5:Tabs ↑↓:Nav +/-:Weight [/]:Fine a:Add d:Del m:Mode e:Explain s:Save r:Reload"
-            stdscr.addnstr(h - 1, 0, keys.ljust(w), w - 1, curses.A_REVERSE)
+            # Bottom status & clean shortcut strip
+            stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
+            footer = " ↑↓:Select  ←/→ or -/+:Tune Weight  Enter:Open/Add  Tab:Switch Pane  /:Palette  o:Open DB  p:Preset  e:Explain  s:Save  q:Quit "
+            stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.A_REVERSE)
             stdscr.refresh()
 
             ch = stdscr.getch()
             if ch in (ord("q"), ord("Q")):
                 break
-            if ch in (ord("1"), ord("2"), ord("3"), ord("4"), ord("5")):
-                tab_idx = int(chr(ch)) - 1
-                cursor = 0
-            elif ch == curses.KEY_UP:
-                cursor = max(0, cursor - 1)
-            elif ch == curses.KEY_DOWN:
-                cursor = min(len(items) - 1, cursor + 1)
-            elif ch in (ord("+"), ord("=")) and tab_idx == 0:
-                state.adjust_weight(cursor, 0.1)
-            elif ch in (ord("-"), ord("_")) and tab_idx == 0:
-                state.adjust_weight(cursor, -0.1)
-            elif ch == ord("]") and tab_idx == 0:
-                state.adjust_weight(cursor, 0.05)
-            elif ch == ord("[") and tab_idx == 0:
-                state.adjust_weight(cursor, -0.05)
-            elif ch in (ord("m"), ord("M")):
+            if ch == 9:  # Tab
+                focus_results = not focus_results
+                continue
+            if ch == ord("/"):
+                _action_command_palette(stdscr)
+                continue
+            if ch == ord("?"):
+                state.status_message = "Tip: Press / for Command Palette or use ↑↓ + Enter on any '+ Add' row."
+                _action_command_palette(stdscr)
+                continue
+            if ch in (ord("o"), ord("O")):
+                _action_open_db(stdscr)
+                continue
+            if ch in (ord("p"), ord("P")):
+                _action_pick_preset(stdscr)
+                continue
+            if ch in (ord("m"), ord("M")):
                 state.cycle_mode()
-            elif ch in (ord("e"), ord("E")):
+                continue
+            if ch in (ord("e"), ord("E")):
                 state.explain = not state.explain
-            elif ch in (ord("r"), ord("R")):
-                state._rebuild_columns_and_pools()
-                state.re_solve()
-                state.status_message = "Reloaded data & re-solved."
-            elif ch in (ord("s"), ord("S")):
-                out_p = _prompt_input(stdscr, "Save preset path (.json): ", hint=f"Default: {state.preset_name}.knapset.json")
-                target = out_p or f"{state.preset_name}.knapset.json"
+                state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
+                continue
+            if ch in (ord("s"), ord("S")):
+                out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
+                if out_p:
+                    try:
+                        state.export_preset(out_p)
+                    except Exception as exc:
+                        state.status_message = f"Save failed: {exc}"
+                continue
+
+            if ch == curses.KEY_MOUSE:
                 try:
-                    state.export_preset(target)
-                except Exception as exc:
-                    state.status_message = f"Save failed: {exc}"
-            elif ch in (ord("d"), ord("D")):
-                if tab_idx == 0 and state.weights:
-                    state.remove_weight(cursor)
-                elif tab_idx == 1 and state.formulas:
-                    state.formulas.pop(cursor)
+                    _, mx, my, _, bstate = curses.getmouse()
+                    if pane_y < my < pane_y + pane_h - 1 and 1 <= mx < left_w - 1:
+                        focus_results = False
+                        clicked_idx = left_scroll + (my - pane_y - 1)
+                        if 0 <= clicked_idx < len(ws_items) and ws_items[clicked_idx].kind != "header":
+                            left_cursor = clicked_idx
+                            it = ws_items[left_cursor]
+                            if it.kind == "weight" and mx >= left_w - 14:
+                                state.adjust_weight(it.index, -0.1 if mx < left_w - 7 else 0.1)
+                            elif bstate & (curses.BUTTON1_DOUBLE_CLICKED | curses.BUTTON1_CLICKED) and it.kind == "action":
+                                ch = 10  # dispatch Enter handler below
+                    elif pane_y < my < pane_y + pane_h - 1 and mx >= right_x:
+                        focus_results = True
+                except Exception:
+                    pass
+
+            if focus_results:
+                if ch == curses.KEY_UP:
+                    right_scroll = max(0, right_scroll - 1)
+                elif ch == curses.KEY_DOWN:
+                    right_scroll = min(max_r_scroll, right_scroll + 1)
+                elif ch == curses.KEY_PPAGE:
+                    right_scroll = max(0, right_scroll - max(3, inner_h // 2))
+                elif ch == curses.KEY_NPAGE:
+                    right_scroll = min(max_r_scroll, right_scroll + max(3, inner_h // 2))
+                continue
+
+            if ch == curses.KEY_UP:
+                nxt = left_cursor - 1
+                while nxt > 0 and ws_items[nxt].kind == "header":
+                    nxt -= 1
+                if nxt >= 0 and ws_items[nxt].kind != "header":
+                    left_cursor = nxt
+            elif ch == curses.KEY_DOWN:
+                nxt = left_cursor + 1
+                while nxt < len(ws_items) and ws_items[nxt].kind == "header":
+                    nxt += 1
+                if nxt < len(ws_items):
+                    left_cursor = nxt
+            elif ch in (ord("+"), ord("="), curses.KEY_RIGHT):
+                if ws_items[left_cursor].kind == "weight":
+                    state.adjust_weight(ws_items[left_cursor].index, 0.1)
+            elif ch in (ord("-"), ord("_"), curses.KEY_LEFT):
+                if ws_items[left_cursor].kind == "weight":
+                    state.adjust_weight(ws_items[left_cursor].index, -0.1)
+            elif ch == ord("]"):
+                if ws_items[left_cursor].kind == "weight":
+                    state.adjust_weight(ws_items[left_cursor].index, 0.05)
+            elif ch == ord("["):
+                if ws_items[left_cursor].kind == "weight":
+                    state.adjust_weight(ws_items[left_cursor].index, -0.05)
+            elif ch in (ord("d"), ord("D"), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
+                cur = ws_items[left_cursor]
+                if cur.kind == "weight":
+                    state.remove_weight(cur.index)
+                elif cur.kind == "limit" and 0 <= cur.index < len(state.limits):
+                    state.limits.pop(cur.index)
+                    state.re_solve()
+                elif cur.kind == "rule" and 0 <= cur.index < len(state.rules):
+                    state.rules.pop(cur.index)
+                    state.re_solve()
+                elif cur.kind == "formula" and 0 <= cur.index < len(state.formulas):
+                    state.formulas.pop(cur.index)
                     state._rebuild_columns_and_pools()
                     state.re_solve()
-                elif tab_idx == 2:
-                    n_lim = len(state.limits)
-                    n_rul = len(state.rules)
-                    if cursor < n_lim:
-                        state.limits.pop(cursor)
-                    elif cursor < n_lim + n_rul:
-                        state.rules.pop(cursor - n_lim)
-                    elif cursor - n_lim - n_rul < len(state.where):
-                        state.where.pop(cursor - n_lim - n_rul)
+                elif cur.kind == "where" and 0 <= cur.index < len(state.where):
+                    state.where.pop(cur.index)
                     state.re_solve()
             elif ch in (ord("a"), ord("A")):
-                try:
-                    if tab_idx == 0:
-                        expr = _prompt_input(stdscr, "Weight expression (e.g. 'ref.score:0.5' or 'cpu.score/gpu.score:-0.2'): ", hint=col_hint)
-                        if expr:
-                            if ":" in expr:
-                                e_part, w_part = expr.rsplit(":", 1)
-                                state.add_or_update_weight(e_part, float(w_part))
-                            else:
-                                state.add_or_update_weight(expr, 0.5)
-                    elif tab_idx == 1:
-                        expr = _prompt_input(stdscr, "Formula ('name = expr'): ", hint=col_hint)
-                        if expr:
-                            state.add_formula(expr)
-                    elif tab_idx == 2:
-                        kind = _prompt_input(stdscr, "Add [l]imit, [r]ule, or [w]here filter? (l/r/w): ")
-                        if kind and kind.lower().startswith("l"):
-                            val = _prompt_input(stdscr, "Limit (e.g. 'sum(price) <= 950'): ", hint=col_hint)
-                            if val:
-                                state.add_limit(val)
-                        elif kind and kind.lower().startswith("r"):
-                            val = _prompt_input(stdscr, "Rule (e.g. 'cpu.socket == mobo.socket' or 'cpu.score / gpu.score < 1'): ", hint=col_hint)
-                            if val:
-                                state.add_rule(val)
-                        elif kind and kind.lower().startswith("w"):
-                            val = _prompt_input(stdscr, "Filter (e.g. 'price <= 500'): ", hint=col_hint)
-                            if val:
-                                state.add_where(val)
-                    elif tab_idx == 3:
-                        kind = _prompt_input(stdscr, "Attach [m]ain DB or [r]eference DB? (m/r): ")
-                        if kind and kind.lower().startswith("m"):
-                            src_p = _prompt_input(stdscr, "Main DB/CSV/JSON path: ")
-                            if src_p:
-                                state.load_from_source(src_p)
-                        elif kind and kind.lower().startswith("r") and state.sources:
-                            slots = list(state.sources.keys())
-                            slot_in = _prompt_input(stdscr, f"Target slot ({'/'.join(slots)}): ") or slots[0]
-                            ref_p = _prompt_input(stdscr, "Reference DB/CSV path: ")
-                            if ref_p:
-                                match_in = _prompt_input(stdscr, "Match expr (e.g. 'title~model'): ")
-                                state.attach_reference(slot_in, ref_p, match_expr=match_in)
-                except Exception as exc:
-                    state.status_message = f"Invalid input: {exc}"
+                cur = ws_items[left_cursor]
+                if cur.kind in ("limit", "rule", "formula", "where") or cur.action_id == "add_constraint":
+                    _action_add_constraint(stdscr)
+                else:
+                    _action_add_weight(stdscr)
             elif ch in (10, 13, curses.KEY_ENTER):
-                if tab_idx == 4 and state.available_presets:
-                    chosen_name = list(state.available_presets.keys())[cursor]
-                    try:
-                        state.load_from_preset(chosen_name)
-                        tab_idx = 0
-                        cursor = 0
-                    except Exception as exc:
-                        state.status_message = f"Failed loading preset '{chosen_name}': {exc}"
+                cur = ws_items[left_cursor]
+                if cur.action_id == "add_weight":
+                    _action_add_weight(stdscr)
+                elif cur.action_id == "add_constraint":
+                    _action_add_constraint(stdscr)
+                elif cur.action_id == "open_db":
+                    _action_open_db(stdscr)
+                elif cur.action_id == "attach_ref":
+                    _action_attach_ref(stdscr)
+                elif cur.action_id == "pick_preset":
+                    _action_pick_preset(stdscr)
+                elif cur.action_id == "save_preset":
+                    out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
+                    if out_p:
+                        try:
+                            state.export_preset(out_p)
+                        except Exception as exc:
+                            state.status_message = f"Save failed: {exc}"
+                elif cur.kind == "weight":
+                    state.adjust_weight(cur.index, 0.1)
 
     curses.wrapper(_loop)
 
@@ -682,7 +1247,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
 def run_tui(argv: List[str]) -> None:
     parser = argparse.ArgumentParser(
         prog=f"{get_cli_prog()} tui",
-        description="Launch interactive Knapset v2 Terminal Studio (curses).",
+        description="Launch interactive Knapset v2 Terminal Studio (agy-style curses TUI).",
     )
     parser.add_argument("target", nargs="?", default=None, help="Optional database file (.db/.csv/.json) or preset to pre-load")
     parser.add_argument("--preset", "-P", default=None, help="Preset file path or installed preset name")
@@ -706,8 +1271,5 @@ def run_tui(argv: List[str]) -> None:
                 state.load_from_source(str(p), ref_path=args.ref, match_expr=args.match, mode=args.mode)
         else:
             state.load_from_source(args.target, ref_path=args.ref, match_expr=args.match, mode=args.mode)
-    elif state.available_presets:
-        first_preset = next(iter(state.available_presets.keys()))
-        state.load_from_preset(first_preset)
 
     run_curses_tui(state)
