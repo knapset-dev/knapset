@@ -679,10 +679,10 @@ def _format_weight_bar(weight: float, width: int = 10) -> str:
 
 
 def _compute_accelerated_step(streak: int, base_step: float = 0.05) -> float:
-    """Returns `0.05` (5%) initially, accelerating smoothly to `0.10` and `0.15` on rapid bursts."""
-    if streak >= 6:
+    """Returns `0.05` (5%) initially, accelerating gradually to `0.10` and `0.15` only during sustained key holds."""
+    if streak >= 16:
         return round(base_step * 3, 2)
-    if streak >= 3:
+    if streak >= 8:
         return round(base_step * 2, 2)
     return base_step
 
@@ -1461,7 +1461,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
         def _nudge_weight(idx: int, sign: int, allow_accel: bool = True) -> None:
             nonlocal last_step_idx, last_step_sign, last_step_at, step_streak
             now = time.monotonic()
-            if allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_step_at) <= 0.35:
+            # Only accelerate on tight key auto-repeat bursts (<=85ms), never on manual fast clicks
+            if allow_accel and idx == last_step_idx and sign == last_step_sign and (now - last_step_at) <= 0.085:
                 step_streak += 1
             else:
                 step_streak = 0
@@ -1696,7 +1697,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             it = ws_items[left_cursor]
                             if it.kind == "weight":
                                 if 15 <= mx <= 18:
-                                    _nudge_weight(it.index, -1, allow_accel=True)
+                                    _nudge_weight(it.index, -1, allow_accel=False)
                                 elif 19 <= mx <= 30:
                                     # Click directly along 10-symbol [██████████] bar in 5% steps (0.00 .. 1.00)
                                     frac = max(0.0, min(1.0, (mx - 19) / 10.0))
@@ -1707,7 +1708,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                                     state.status_message = f"{w_expr}: {val_click:.2f}"
                                     _schedule_solve()
                                 elif 31 <= mx <= 34:
-                                    _nudge_weight(it.index, 1, allow_accel=True)
+                                    _nudge_weight(it.index, 1, allow_accel=False)
                                 elif mx >= 43:
                                     state.toggle_weight_direction(it.index, auto_solve=False)
                                     _schedule_solve()

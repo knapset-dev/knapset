@@ -101,9 +101,10 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertEqual(_format_weight_bar(0.6), "██████░░░░")
             self.assertEqual(_format_weight_bar(0.15), "█▌░░░░░░░░")
             self.assertEqual(_compute_accelerated_step(0), 0.05)
-            self.assertEqual(_compute_accelerated_step(2), 0.05)
-            self.assertEqual(_compute_accelerated_step(3), 0.10)
-            self.assertEqual(_compute_accelerated_step(6), 0.15)
+            self.assertEqual(_compute_accelerated_step(7), 0.05)
+            self.assertEqual(_compute_accelerated_step(8), 0.10)
+            self.assertEqual(_compute_accelerated_step(15), 0.10)
+            self.assertEqual(_compute_accelerated_step(16), 0.15)
 
             # Clamping within [0.0, 1.0] & direction toggle
             state.adjust_weight(0, 5.0)
