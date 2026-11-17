@@ -5,13 +5,15 @@ Knapset v2 CLI Handlers for Phase 1: `inspect`, `init`, and `compare`.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 from pathlib import Path
 import sys
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
-from enricher import MatchSpec, enrich_rows, parse_match_expr
+from enricher import MatchSpec, enrich_from_source, enrich_rows, parse_match_expr
+from solver_engine import BasketSolution, RankedItem, SetSolution, solve_basket, solve_rank, solve_sets
 from sources.base import SourceSchema, TableSchema
 from sources.registry import open_source
 
@@ -291,3 +293,370 @@ def run_compare(argv: List[str]) -> None:
         else:
             print(f"  {idx:>2}. [MISS ] {str(left_val)[:36]:<36} -> (no match)")
     print()
+
+
+def _parse_ref_spec(
+    raw_ref: str,
+    default_match: Optional[str],
+    default_strategy: Optional[str],
+    default_alias: str,
+    default_on_unmatched: str,
+) -> Dict[str, Any]:
+    """
+    Parses `--ref <path>` or `--ref <path>:match=a~b,alias=ref,table=t,slot=gpu,strategy=token,on_unmatched=drop`.
+    """
+    path_part = raw_ref
+    opts: Dict[str, str] = {}
+    if ":" in raw_ref:
+        lhs, rhs = raw_ref.rsplit(":", 1)
+        if "=" in rhs and not Path(raw_ref).exists():
+            path_part = lhs
+            for chunk in rhs.split(","):
+                if "=" in chunk:
+                    k, v = chunk.split("=", 1)
+                    opts[k.strip().lower()] = v.strip()
+
+    return {
+        "path": path_part,
+        "table": opts.get("table"),
+        "slot": opts.get("slot"),
+        "match": opts.get("match") or default_match,
+        "strategy": opts.get("strategy") or default_strategy,
+        "alias": opts.get("alias") or default_alias,
+        "on_unmatched": opts.get("on_unmatched") or default_on_unmatched,
+    }
+
+
+def _enrich_rows_with_refs(
+    rows: List[Dict[str, Any]],
+    ref_specs: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    current = list(rows)
+    for cfg in ref_specs:
+        if not current:
+            break
+        ref_src = open_source(cfg["path"])
+        ref_rows = ref_src.load_rows(table=cfg.get("table"))
+        if cfg.get("match"):
+            lf, rf, inferred = parse_match_expr(cfg["match"])
+            strat = cfg.get("strategy") or inferred or "token"
+        else:
+            l_cols = list(current[0].keys()) if current else []
+            r_cols = list(ref_rows[0].keys()) if ref_rows else []
+            lf, rf, inferred = _infer_default_match(l_cols, r_cols)
+            strat = cfg.get("strategy") or inferred
+        res = enrich_rows(
+            current,
+            ref_rows,
+            MatchSpec(
+                left_field=lf,
+                right_field=rf,
+                strategy=strat,
+                alias=cfg.get("alias") or "ref",
+                on_unmatched=cfg.get("on_unmatched") or "drop",
+            ),
+        )
+        current = res.rows
+    return current
+
+
+def _row_label(row: Dict[str, Any]) -> str:
+    for k in ("title", "name", "model", "label", "sku", "id"):
+        val = row.get(k)
+        if val is not None and str(val).strip():
+            return str(val)
+    for k, v in row.items():
+        if not isinstance(v, (dict, list)) and v is not None:
+            return f"{k}={v}"
+    return "(item)"
+
+
+def _flatten_scalar_fields(row: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    flat: Dict[str, Any] = {}
+    for k, v in row.items():
+        key = f"{prefix}{k}" if prefix else str(k)
+        if isinstance(v, dict):
+            for sk, sv in v.items():
+                if not isinstance(sv, (dict, list)):
+                    flat[f"{key}.{sk}"] = sv
+        elif not isinstance(v, list):
+            flat[key] = v
+    return flat
+
+
+def _export_output(export_path: str, json_payload: Dict[str, Any], flat_rows: List[Dict[str, Any]], title: str) -> None:
+    out = Path(export_path).expanduser().resolve()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    ext = out.suffix.lower()
+    if ext == ".json":
+        out.write_text(json.dumps(json_payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    elif ext == ".csv":
+        fieldnames: List[str] = []
+        seen = set()
+        for r in flat_rows:
+            for k in r.keys():
+                if k not in seen:
+                    seen.add(k)
+                    fieldnames.append(k)
+        with out.open("w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for r in flat_rows:
+                writer.writerow(r)
+    elif ext in (".md", ".markdown"):
+        lines = [f"# {title}", ""]
+        if flat_rows:
+            cols: List[str] = []
+            seen = set()
+            for r in flat_rows:
+                for k in r.keys():
+                    if k not in seen:
+                        seen.add(k)
+                        cols.append(k)
+            lines.append("| " + " | ".join(cols) + " |")
+            lines.append("| " + " | ".join("---" for _ in cols) + " |")
+            for r in flat_rows:
+                vals = [str(r.get(c, "")).replace("|", "\\|") for c in cols]
+                lines.append("| " + " | ".join(vals) + " |")
+        else:
+            lines.append("_No results._")
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    else:
+        raise ValueError(f"Unsupported export extension '{out.suffix}'. Use .json, .csv, or .md.")
+    print(f"[OK] Exported results to {out}", file=sys.stderr)
+
+
+def _add_common_solve_flags(parser: argparse.ArgumentParser, default_top: int = 10) -> None:
+    parser.add_argument("--ref", action="append", default=[], help="Reference DB/file (optionally ':match=a~b,alias=ref,on_unmatched=drop')")
+    parser.add_argument("--match", default=None, help="Match rule for --ref, e.g. 'title~model' or 'sku=id'")
+    parser.add_argument("--strategy", choices=["exact", "token", "regex"], default=None, help="Default --ref match strategy")
+    parser.add_argument("--alias", default="ref", help="Default --ref alias (default: ref)")
+    parser.add_argument("--on-unmatched", choices=["drop", "keep"], default="drop", help="Unmatched row policy for --ref (default: drop)")
+    parser.add_argument("--formula", "-f", action="append", default=[], help="Derived row formula, e.g. 'deal = (price - ref.msrp) / ref.msrp'")
+    parser.add_argument("--where", "-w", action="append", default=[], help="Row filter expression, e.g. 'vram >= 12 and price <= 600'")
+    parser.add_argument("--prefer", "-p", action="append", default=[], help="Signed weights, e.g. 'ref.score:+0.7,price:-0.3'")
+    parser.add_argument("--top", "-n", type=int, default=default_top, help=f"Number of results to return (default: {default_top})")
+    parser.add_argument("--explain", action="store_true", help="Print per-term normalized score breakdown")
+    parser.add_argument("--json", action="store_true", help="Output structured JSON")
+    parser.add_argument("--export", default=None, help="Export results to .json, .csv, or .md")
+
+
+def _print_breakdown(bd_list: Sequence[Any]) -> None:
+    if not bd_list:
+        return
+    parts = [
+        f"{b.expression}[raw={b.raw_value}, n={b.normalized:.2f}, w={b.weight:+g} -> +{b.contribution:.1f}]"
+        for b in bd_list
+    ]
+    print(f"      explain: {' | '.join(parts)}")
+
+
+def run_rank(argv: List[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} rank",
+        description="Rank rows in a table using signed weights and optional Reference DB enrichment.",
+    )
+    parser.add_argument("source", help="Primary DB/CSV/JSON source")
+    parser.add_argument("--table", "-t", default=None, help="Table/collection name")
+    parser.add_argument("--query", "-q", default=None, help="Read-only SQL SELECT query for SQLite")
+    _add_common_solve_flags(parser, default_top=15)
+    args = parser.parse_args(argv)
+
+    rows = open_source(args.source).load_rows(table=args.table, query=args.query)
+    ref_specs = [
+        _parse_ref_spec(r, args.match, args.strategy, args.alias, args.on_unmatched)
+        for r in args.ref
+    ]
+    if ref_specs:
+        rows = _enrich_rows_with_refs(rows, ref_specs)
+
+    ranked, meta = solve_rank(
+        rows=rows,
+        weights=args.prefer,
+        formulas=args.formula,
+        where=args.where,
+        top_n=args.top,
+    )
+
+    payload = {"meta": meta, "results": [r.to_dict() for r in ranked]}
+    flat_rows = [{"rank": i, "score": r.score, **_flatten_scalar_fields(r.row)} for i, r in enumerate(ranked, 1)]
+
+    if args.export:
+        _export_output(args.export, payload, flat_rows, f"Knapset Rank: {Path(args.source).name}")
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    print(f"\nRanked Results [{Path(args.source).name}] ({meta['after_filter']}/{meta['total_input']} matched/filtered)")
+    print("═" * 84)
+    if not ranked:
+        print("  (No matching rows.)\n")
+        return
+    for idx, item in enumerate(ranked, 1):
+        label = _row_label(item.row)
+        metrics = ", ".join(f"{k}={v}" for k, v in _flatten_scalar_fields(item.row).items() if k not in ("id", "title", "name", "model"))
+        print(f"  {idx:>2}. [{item.score:5.1f}] {label[:34]:<34} │ {metrics[:40]}")
+        if args.explain:
+            _print_breakdown(item.breakdown)
+    print()
+
+
+def run_basket(argv: List[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} basket",
+        description="Pack an optimal multi-item basket from a table under multi-resource limits.",
+    )
+    parser.add_argument("source", help="Primary DB/CSV/JSON source")
+    parser.add_argument("--table", "-t", default=None, help="Table/collection name")
+    parser.add_argument("--query", "-q", default=None, help="Read-only SQL SELECT query for SQLite")
+    parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit, e.g. 'sum(price) <= 1000', 'count <= 5'")
+    parser.add_argument("--max-per-item", type=int, default=1, help="Max copies per row (default: 1 for 0/1 knapsack)")
+    parser.add_argument("--qty-field", default=None, help="Optional column capping per-row quantity")
+    _add_common_solve_flags(parser, default_top=5)
+    args = parser.parse_args(argv)
+
+    rows = open_source(args.source).load_rows(table=args.table, query=args.query)
+    ref_specs = [
+        _parse_ref_spec(r, args.match, args.strategy, args.alias, args.on_unmatched)
+        for r in args.ref
+    ]
+    if ref_specs:
+        rows = _enrich_rows_with_refs(rows, ref_specs)
+
+    solutions, meta = solve_basket(
+        rows=rows,
+        weights=args.prefer,
+        limits=args.limit,
+        formulas=args.formula,
+        where=args.where,
+        top_n=args.top,
+        max_per_item=args.max_per_item,
+        qty_field=args.qty_field,
+    )
+
+    payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
+    flat_rows: List[Dict[str, Any]] = []
+    for s_idx, sol in enumerate(solutions, 1):
+        for it, cnt, sc in zip(sol.items, sol.counts, sol.item_scores):
+            flat_rows.append(
+                {
+                    "solution": s_idx,
+                    "total_score": sol.total_score,
+                    "qty": cnt,
+                    "item_score": sc,
+                    **_flatten_scalar_fields(it),
+                }
+            )
+
+    if args.export:
+        _export_output(args.export, payload, flat_rows, f"Knapset Basket: {Path(args.source).name}")
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    print(f"\nBasket Solutions [{Path(args.source).name}] ({meta['after_filter']} candidates)")
+    print("═" * 84)
+    if not solutions:
+        print("  (No feasible basket satisfies all limits.)\n")
+        return
+    for idx, sol in enumerate(solutions, 1):
+        lim_str = ", ".join(f"{k} => {v:g}" for k, v in sol.metrics.items())
+        print(f"  Basket #{idx} │ Total Utility: {sol.total_score:.1f} │ Items: {sum(sol.counts)}" + (f" │ {lim_str}" if lim_str else ""))
+        for it, cnt, sc in zip(sol.items, sol.counts, sol.item_scores):
+            qty_tag = f" x{cnt}" if cnt > 1 else ""
+            print(f"    • [{sc:5.1f}] {_row_label(it)}{qty_tag}")
+        print()
+
+
+def run_solve(argv: List[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} solve",
+        description="Synthesize optimal multi-slot combinations across tables/files with weights, limits, and AST rules.",
+    )
+    parser.add_argument("source", nargs="?", default=None, help="Optional multi-table SQLite/JSON source (loads tables as slots)")
+    parser.add_argument("--tables", default=None, help="Comma-separated table subset from positional source")
+    parser.add_argument("--slot", action="append", default=[], help="Slot source binding: 'name=path[:table]'")
+    parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit, e.g. 'sum(price) <= 1000'")
+    parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule, e.g. 'cpu.socket == mobo.socket'")
+    _add_common_solve_flags(parser, default_top=5)
+    args = parser.parse_args(argv)
+
+    slot_pools: Dict[str, List[Dict[str, Any]]] = {}
+    if args.source:
+        src = open_source(args.source)
+        schema = src.inspect()
+        wanted = [t.strip() for t in args.tables.split(",") if t.strip()] if args.tables else schema.table_names()
+        for tname in wanted:
+            slot_pools[tname] = src.load_rows(table=tname)
+
+    for s_spec in args.slot:
+        if "=" not in s_spec:
+            raise ValueError(f"Invalid --slot '{s_spec}'. Expected 'slot_name=source[:table]'.")
+        sname, target = s_spec.split("=", 1)
+        sname = sname.strip()
+        tbl = None
+        if ":" in target:
+            lhs, rhs = target.rsplit(":", 1)
+            if not Path(target).exists() and rhs:
+                target, tbl = lhs, rhs
+        slot_pools[sname] = open_source(target).load_rows(table=tbl)
+
+    if not slot_pools:
+        raise ValueError("Provide a multi-table source or at least one '--slot name=path'.")
+
+    ref_specs = [
+        _parse_ref_spec(r, args.match, args.strategy, args.alias, args.on_unmatched)
+        for r in args.ref
+    ]
+    for cfg in ref_specs:
+        target_slots = [cfg["slot"]] if cfg.get("slot") else list(slot_pools.keys())
+        for sname in target_slots:
+            if sname in slot_pools:
+                slot_pools[sname] = _enrich_rows_with_refs(slot_pools[sname], [cfg])
+
+    solutions, meta = solve_sets(
+        slot_pools=slot_pools,
+        weights=args.prefer,
+        limits=args.limit,
+        rules=args.rule,
+        formulas=args.formula,
+        where=args.where,
+        top_n=args.top,
+    )
+
+    payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
+    flat_rows: List[Dict[str, Any]] = []
+    for idx, sol in enumerate(solutions, 1):
+        for sname, item in sol.slots.items():
+            flat_rows.append(
+                {
+                    "solution": idx,
+                    "total_score": sol.total_score,
+                    "slot": sname,
+                    **_flatten_scalar_fields(item),
+                }
+            )
+
+    if args.export:
+        _export_output(args.export, payload, flat_rows, "Knapset Multi-Slot Solve")
+
+    if args.json:
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    print(f"\nSet Combinations ({', '.join(f'{k}={v}' for k, v in meta.get('slot_counts', {}).items())})")
+    print("═" * 84)
+    if not solutions:
+        print("  (No valid combination satisfies all rules and limits.)\n")
+        return
+    for idx, sol in enumerate(solutions, 1):
+        lim_str = ", ".join(f"{k} => {v:g}" for k, v in sol.metrics.items())
+        print(f"  Set #{idx} │ Score: {sol.total_score:.1f}" + (f" │ {lim_str}" if lim_str else ""))
+        for sname, item in sol.slots.items():
+            price_hint = f" (price={item['price']})" if "price" in item else ""
+            print(f"    • {sname:<12}: {_row_label(item)}{price_hint}")
+        if args.explain:
+            _print_breakdown(sol.breakdown)
+        print()

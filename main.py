@@ -26,6 +26,9 @@ SUBCOMMANDS = {
     "inspect": "Inspect tables, columns, types, and ranges in a SQLite/CSV/JSON source",
     "init": "Scaffold a starter v2 JSON preset from an existing database or file",
     "compare": "Match and compare a candidate DB against a Reference DB (--ref)",
+    "rank": "Rank rows from a table using signed weights, formulas, and filters",
+    "basket": "Pack optimal multi-item baskets under multi-resource limits (0/1 or bounded knapsack)",
+    "solve": "Synthesize multi-slot combinations across tables/files with weights, limits, and AST rules",
     "domains": "List registered domain extensions (Layouts & Weights)",
     "modules": "Inspect pluggable modules across all 5 decoupled subsystems",
     "plugins": "Alias for 'modules'",
@@ -106,6 +109,9 @@ def print_help() -> None:
     print("  inspect     Inspect tables, columns, inferred types, and ranges in a DB/CSV/JSON source")
     print("  init        Scaffold a starter v2 JSON preset from an existing database or file")
     print("  compare     Match and compare a candidate DB against a Reference DB (--ref)")
+    print("  rank        Rank rows in a table using signed weights, formulas, and filters")
+    print("  basket      Pack optimal multi-item baskets under multi-resource limits (knapsack)")
+    print("  solve       Synthesize multi-slot combinations across tables/files with rules & limits")
     print("  module      Package manager & dev tools: search, info, install, update, remove, new, verify, list, config")
     print("  modules     Inspect pluggable modules across all 5 decoupled subsystems (aliases: plugins)")
     print("  domains     List registered domain extensions and layouts (aliases: extensions)")
@@ -913,6 +919,15 @@ def main(argv: Optional[List[str]] = None) -> None:
         elif cmd == "compare":
             from v2_cli import run_compare
             run_compare(extra)
+        elif cmd == "rank":
+            from v2_cli import run_rank
+            run_rank(extra)
+        elif cmd == "basket":
+            from v2_cli import run_basket
+            run_basket(extra)
+        elif cmd == "solve":
+            from v2_cli import run_solve
+            run_solve(extra)
         elif cmd in ("domains", "extensions"):
             _run_domains(extra)
         elif cmd == "sync":

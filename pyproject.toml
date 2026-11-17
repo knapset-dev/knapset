@@ -37,7 +37,9 @@ ks = "main:main"
 py-modules = [
     "app_paths",
     "enricher",
+    "formula_engine",
     "main",
+    "solver_engine",
     "v2_cli",
     "currency",
     "analyzer_core",
