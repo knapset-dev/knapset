@@ -2,11 +2,11 @@
 Knapset v2 Interactive Terminal Studio (`ks tui`) — Antigravity (`agy`) style.
 
 100% Python Standard Library (`curses`):
-- Rounded box-drawing cards (`╭─╮│╰─╯`) with cyan focus highlight and directional weight sliders
-- Single unified workspace (Weights, Formulas, Rules & Limits, Sources & Refs) navigable with ↑/↓ + Enter
-- `←`/`→` or `+`/`-` (and optional mouse clicks) adjust weights smoothly with live re-solving
-- `/` Command Palette modal (`/open`, `/ref`, `/preset`, `/profile`, `/weight`, `/formula`, `/rule`, `/limit`, `/mode`, `/explain`, `/save`)
-- Interactive File & Reference DB Browser, Preset Picker, and Tab-autocomplete Expression Composer
+- Calm dark palette (zero harsh pink/red; soft cyan/green/amber accents) with rounded cards (`╭─╮│╰─╯`)
+- Delete & re-pick Main DB slots and Reference DBs directly in the workspace
+- Multi-line wrapped available column hints inside the formula/rule/weight composer (`Tab` inserts field)
+- Save named preference profiles (`s` / `+ Save preferences`) persisted across sessions & hop between them (`Enter` / `h`)
+- `/` Command Palette modal (`/open`, `/ref`, `/preset`, `/profile`, `/weight`, `/rule`, `/mode`, `/explain`, `/save`)
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
 from formula_engine import LimitSpec, RuleSpec, SafeExpression, parse_formulas, parse_weights
-from preset_loader import PresetConfig, discover_presets, resolve_preset, save_preset
+from preset_loader import PresetConfig, discover_presets, get_user_presets_dir, resolve_preset, save_preset
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.registry import open_source
 
@@ -91,7 +91,7 @@ def _suggest_weights_from_slots(slot_pools: Dict[str, List[Dict[str, Any]]], mod
 
 
 def discover_local_data_files(directory: Optional[Path] = None) -> List[Path]:
-    """Lists supported DB/CSV/JSON files in `directory` (excluding hidden/venv noise)."""
+    """Lists supported DB/CSV/JSON files in `directory` (excluding hidden noise)."""
     root = (directory or Path.cwd()).resolve()
     files: List[Path] = []
     try:
@@ -112,7 +112,7 @@ class TuiSessionState:
     title: str = "Knapset v2 Studio"
     preset_name: str = "custom"
     mode: str = "solve"
-    profile: str = "custom"
+    profile: str = "default"
     sources: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     references: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     base_dir: Path = field(default_factory=Path.cwd)
@@ -121,6 +121,7 @@ class TuiSessionState:
     where: List[str] = field(default_factory=list)
     limits: List[str] = field(default_factory=list)
     rules: List[str] = field(default_factory=list)
+    saved_profiles: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     top_n: int = 8
     explain: bool = False
     dirty: bool = False
@@ -130,12 +131,54 @@ class TuiSessionState:
     results: List[Dict[str, Any]] = field(default_factory=list)
     meta: Dict[str, Any] = field(default_factory=dict)
     ref_stats: Dict[str, str] = field(default_factory=dict)
-    status_message: str = "Use ↑↓ to select, ←/→ or +/- to slide weights, / for commands, ? for help."
+    status_message: str = "↑↓ Select · ←/→ Slide Weight · s Save Preference · h Hop Profile · / Commands"
     available_presets: Dict[str, PresetConfig] = field(default_factory=dict)
     active_preset_cfg: Optional[PresetConfig] = None
 
     def refresh_discovered_presets(self) -> None:
         self.available_presets = discover_presets()
+
+    def _snapshot_current_profile(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "weights": {k: v for k, v in self.weights},
+            "formulas": list(self.formulas),
+            "where": list(self.where),
+            "limits": list(self.limits),
+            "rules": list(self.rules),
+        }
+
+    def _apply_profile_dict(self, prof_name: str, prof_data: Dict[str, Any], cfg: Optional[PresetConfig] = None) -> None:
+        self.profile = prof_name
+        base_mode = cfg.mode if cfg else self.mode
+        self.mode = str(prof_data.get("mode") or base_mode)
+        if "formulas" in prof_data:
+            self.formulas = list(prof_data.get("formulas") or [])
+        elif cfg:
+            if isinstance(cfg.formulas, dict):
+                self.formulas = [f"{k} = {v}" for k, v in cfg.formulas.items()]
+            else:
+                self.formulas = list(cfg.formulas or [])
+
+        if "where" in prof_data:
+            self.where = (list(cfg.where) if cfg else []) + list(prof_data.get("where") or [])
+        elif cfg:
+            self.where = list(cfg.where)
+
+        self.limits = list(prof_data.get("limits") if "limits" in prof_data else (cfg.limits if cfg else []))
+        if "rules" in prof_data:
+            base_rules = list(cfg.rules) if (cfg and prof_name in (cfg.profiles or {})) else []
+            # Avoid duplicating base preset rules already baked into saved profile
+            prof_rules = list(prof_data.get("rules") or [])
+            merged_r = list(base_rules)
+            for r in prof_rules:
+                if r not in merged_r:
+                    merged_r.append(r)
+            self.rules = merged_r
+        elif cfg:
+            self.rules = list(cfg.rules)
+
+        self.weights = [(str(k), float(v)) for k, v in (prof_data.get("weights") or {}).items()]
 
     def _rebuild_columns_and_pools(self) -> None:
         ref_cache: Dict[str, List[Dict[str, Any]]] = {}
@@ -179,7 +222,7 @@ class TuiSessionState:
                     MatchSpec(left_field=lf, right_field=rf, strategy=strat, alias=alias, on_unmatched=on_unmatched),
                 )
                 rows = enr.rows
-                self.ref_stats[f"{slot_name} -> {ref_key}"] = f"{enr.matched}/{enr.total} ({enr.match_rate * 100:.0f}%)"
+                self.ref_stats[ref_key] = f"{enr.matched}/{enr.total} ({enr.match_rate * 100:.0f}%)"
 
             pools[slot_name] = rows
             prefix = f"{slot_name}." if len(self.sources) > 1 else ""
@@ -204,30 +247,22 @@ class TuiSessionState:
         self.base_dir = cfg.source_path.parent if cfg.source_path else Path.cwd()
         self.sources = {k: dict(v) for k, v in cfg.sources.items()}
         self.references = {k: dict(v) for k, v in cfg.references.items()}
+        self.saved_profiles = {k: dict(v) for k, v in cfg.profiles.items()}
 
         prof_key, prof_data = cfg.resolve_profile(profile_name)
-        self.profile = prof_key
-        self.mode = str(prof_data.get("mode") or cfg.mode)
-
-        if isinstance(cfg.formulas, dict):
-            self.formulas = [f"{k} = {v}" for k, v in cfg.formulas.items()]
-        else:
-            self.formulas = list(cfg.formulas or [])
-        self.where = list(cfg.where) + list(prof_data.get("where") or [])
-        self.limits = list(prof_data.get("limits") or cfg.limits)
-        self.rules = list(cfg.rules) + list(prof_data.get("rules") or [])
-        self.weights = [(str(k), float(v)) for k, v in (prof_data.get("weights") or {}).items()]
+        self._apply_profile_dict(prof_key, prof_data, cfg=cfg)
         self.dirty = False
 
         self._rebuild_columns_and_pools()
         self.re_solve()
-        self.status_message = f"Loaded preset '{cfg.name}' (profile: {prof_key}, mode: {self.mode})."
+        self.status_message = f"Loaded '{cfg.name}' [profile={prof_key}, mode={self.mode}]."
 
     def load_from_source(
         self,
         source_path: str,
         table: Optional[str] = None,
         ref_path: Optional[str] = None,
+        ref_table: Optional[str] = None,
         match_expr: Optional[str] = None,
         mode: Optional[str] = None,
     ) -> None:
@@ -238,7 +273,7 @@ class TuiSessionState:
         self.active_preset_cfg = None
         self.preset_name = p.stem.lower().replace(" ", "_")
         self.title = f"{p.name}"
-        self.profile = "custom"
+        self.profile = "default"
 
         tbl_names = [table] if table else schema.table_names()
         eff_mode = mode or ("solve" if len(tbl_names) > 1 else "rank")
@@ -252,7 +287,13 @@ class TuiSessionState:
 
         self.references = {}
         if ref_path:
-            self.attach_reference(tbl_names[0] if tbl_names else "rows", ref_path, match_expr=match_expr, rebuild=False)
+            self.attach_reference(
+                tbl_names[0] if tbl_names else "rows",
+                ref_path,
+                ref_table=ref_table,
+                match_expr=match_expr,
+                rebuild=False,
+            )
 
         self.formulas = []
         self.where = []
@@ -260,14 +301,40 @@ class TuiSessionState:
         self.rules = []
         self._rebuild_columns_and_pools()
         self.weights = _suggest_weights_from_slots(self.slot_pools, self.mode)
+        self.saved_profiles = {"default": self._snapshot_current_profile()}
         self.dirty = True
         self.re_solve()
-        self.status_message = f"Opened '{p.name}' ({len(tbl_names)} table(s), mode={self.mode})."
+        self.status_message = f"Opened '{p.name}' ({len(tbl_names)} slot(s), mode={self.mode})."
+
+    def remove_slot(self, slot_name: str) -> None:
+        """Removes a DB slot/table from the workspace and cleans orphan references."""
+        if slot_name not in self.sources:
+            return
+        del self.sources[slot_name]
+        # Prune references no longer referenced by any remaining slot
+        used_refs = set()
+        for scfg in self.sources.values():
+            r = scfg.get("ref") or scfg.get("refs") or []
+            if isinstance(r, str):
+                used_refs.add(r)
+            elif isinstance(r, list):
+                used_refs.update(r)
+        for rk in list(self.references.keys()):
+            if rk not in used_refs:
+                del self.references[rk]
+
+        if len(self.sources) <= 1 and self.mode == "solve":
+            self.mode = "rank"
+        self.dirty = True
+        self._rebuild_columns_and_pools()
+        self.re_solve()
+        self.status_message = f"Removed DB slot '{slot_name}'."
 
     def attach_reference(
         self,
         slot_name: str,
         ref_path: str,
+        ref_table: Optional[str] = None,
         match_expr: Optional[str] = None,
         alias: str = "ref",
         on_unmatched: str = "drop",
@@ -276,7 +343,7 @@ class TuiSessionState:
         if slot_name not in self.sources:
             raise KeyError(f"Unknown slot '{slot_name}'.")
         rp = str(Path(ref_path).expanduser().resolve())
-        ref_rows = open_source(rp).load_rows()
+        ref_rows = open_source(rp).load_rows(table=ref_table)
         if not match_expr:
             slot_cfg = self.sources[slot_name]
             slot_src = str(slot_cfg["source"])
@@ -287,13 +354,16 @@ class TuiSessionState:
             r_cols = [k for k in (ref_rows[0].keys() if ref_rows else []) if isinstance(ref_rows[0][k], str)]
             match_expr = f"{l_cols[0] if l_cols else 'title'}~{r_cols[0] if r_cols else 'model'}"
         ref_key = f"{slot_name}_{alias}"
-        self.references[ref_key] = {
+        ref_entry: Dict[str, Any] = {
             "source": rp,
             "match": match_expr,
             "strategy": "regex" if "~=" in match_expr else ("exact" if "=" in match_expr and "~" not in match_expr else "token"),
             "alias": alias,
             "on_unmatched": on_unmatched,
         }
+        if ref_table:
+            ref_entry["table"] = ref_table
+        self.references[ref_key] = ref_entry
         raw_ref = self.sources[slot_name].get("ref")
         existing_refs = list(raw_ref) if isinstance(raw_ref, list) else ([raw_ref] if raw_ref else [])
         if ref_key not in existing_refs:
@@ -303,8 +373,30 @@ class TuiSessionState:
         if rebuild:
             self._rebuild_columns_and_pools()
             self.re_solve()
-            cov = self.ref_stats.get(f"{slot_name} -> {ref_key}", "")
-            self.status_message = f"Linked reference '{Path(rp).name}' to {slot_name} ({cov})."
+            cov = self.ref_stats.get(ref_key, "")
+            self.status_message = f"Linked reference '{Path(rp).name}' -> {slot_name} ({cov})."
+
+    def detach_reference(self, ref_key: str) -> None:
+        """Detaches and removes a Reference DB binding."""
+        if ref_key not in self.references:
+            return
+        del self.references[ref_key]
+        for scfg in self.sources.values():
+            raw = scfg.get("ref")
+            if raw == ref_key:
+                del scfg["ref"]
+            elif isinstance(raw, list) and ref_key in raw:
+                rem = [x for x in raw if x != ref_key]
+                if not rem:
+                    del scfg["ref"]
+                elif len(rem) == 1:
+                    scfg["ref"] = rem[0]
+                else:
+                    scfg["ref"] = rem
+        self.dirty = True
+        self._rebuild_columns_and_pools()
+        self.re_solve()
+        self.status_message = f"Detached reference DB '{ref_key}'."
 
     def adjust_weight(self, idx: int, delta: float) -> None:
         if idx < 0 or idx >= len(self.weights):
@@ -314,7 +406,7 @@ class TuiSessionState:
         self.weights[idx] = (expr, new_val)
         self.dirty = True
         self.re_solve()
-        direction = "↑ maximize" if new_val > 0 else ("↓ minimize" if new_val < 0 else "· neutral")
+        direction = "↑ max" if new_val > 0 else ("↓ min" if new_val < 0 else "· neutral")
         self.status_message = f"{expr}: {new_val:+.2f} ({direction})"
 
     def add_or_update_weight(self, expr: str, weight: float) -> None:
@@ -366,6 +458,48 @@ class TuiSessionState:
         self.re_solve()
         self.status_message = f"Added filter: {where_expr.strip()}"
 
+    def save_preference_profile(self, profile_name: str, persist: bool = True, out_path: Optional[Path] = None) -> Optional[Path]:
+        """
+        Saves current weights, formulas, limits, rules, filters, and mode under a named
+        preference profile (`profile_name`) so you can hop between preferences anytime,
+        and persists the preset into `get_user_presets_dir()` by default.
+        """
+        clean = profile_name.strip().lower().replace(" ", "_")
+        if not clean:
+            raise ValueError("Preference profile name cannot be empty.")
+        self.saved_profiles[clean] = self._snapshot_current_profile()
+        self.profile = clean
+        if not persist:
+            self.status_message = f"Saved preference profile '{clean}' in session."
+            return None
+
+        target = out_path or (get_user_presets_dir() / f"{self.preset_name or 'workspace'}.json")
+        saved = self.export_preset(target, preset_name=self.preset_name)
+        self.refresh_discovered_presets()
+        self.status_message = f"Saved preference '{clean}' -> {saved}"
+        return saved
+
+    def switch_profile(self, profile_name: str) -> None:
+        """Hops to another saved preference profile without unloading your DBs/References."""
+        if profile_name not in self.saved_profiles:
+            raise KeyError(f"Profile '{profile_name}' not found.")
+        self._apply_profile_dict(profile_name, self.saved_profiles[profile_name], cfg=self.active_preset_cfg)
+        self._rebuild_columns_and_pools()
+        self.re_solve()
+        self.status_message = f"Switched preference profile -> '{profile_name}'."
+
+    def delete_preference_profile(self, profile_name: str) -> None:
+        if len(self.saved_profiles) <= 1 or profile_name not in self.saved_profiles:
+            self.status_message = "Cannot delete the only active preference profile."
+            return
+        del self.saved_profiles[profile_name]
+        if self.profile == profile_name:
+            first = next(iter(self.saved_profiles.keys()))
+            self.switch_profile(first)
+        else:
+            self.status_message = f"Removed preference profile '{profile_name}'."
+        self.dirty = True
+
     def cycle_mode(self) -> None:
         order = ("solve", "basket", "rank") if len(self.slot_pools) > 1 else ("rank", "basket")
         curr_idx = order.index(self.mode) if self.mode in order else 0
@@ -374,12 +508,12 @@ class TuiSessionState:
         self.status_message = f"Mode switched to '{self.mode}'."
 
     def cycle_profile(self) -> None:
-        if not self.active_preset_cfg or len(self.active_preset_cfg.profile_names()) <= 1:
+        names = list(self.saved_profiles.keys())
+        if len(names) <= 1:
             return
-        names = self.active_preset_cfg.profile_names()
         idx = names.index(self.profile) if self.profile in names else 0
         nxt = names[(idx + 1) % len(names)]
-        self.load_from_preset(str(self.active_preset_cfg.source_path or self.active_preset_cfg.name), profile_name=nxt)
+        self.switch_profile(nxt)
 
     def re_solve(self) -> None:
         try:
@@ -428,6 +562,8 @@ class TuiSessionState:
 
     def export_preset(self, path: str | Path, preset_name: Optional[str] = None) -> Path:
         name = (preset_name or self.preset_name or "custom_preset").strip().lower().replace(" ", "_")
+        profiles_out = dict(self.saved_profiles)
+        profiles_out[self.profile or "default"] = self._snapshot_current_profile()
         cfg = PresetConfig(
             schema_version="2.0",
             name=name,
@@ -440,19 +576,12 @@ class TuiSessionState:
             where=self.where,
             limits=self.limits,
             rules=self.rules,
-            profiles={
-                self.profile or "custom": {
-                    "weights": {k: v for k, v in self.weights},
-                    "limits": list(self.limits),
-                    "rules": list(self.rules),
-                    "where": list(self.where),
-                }
-            },
-            default_profile=self.profile or "custom",
+            profiles=profiles_out,
+            default_profile=self.profile or next(iter(profiles_out.keys())),
         )
         saved = save_preset(cfg, path, overwrite=True)
         self.dirty = False
-        self.status_message = f"Saved preset -> {saved.name}"
+        self.status_message = f"Saved preset -> {saved}"
         return saved
 
 
@@ -473,11 +602,12 @@ def _format_weight_bar(weight: float, width: int = 8) -> str:
 
 @dataclass
 class _WorkspaceItem:
-    kind: str  # "header" | "weight" | "limit" | "rule" | "formula" | "where" | "action" | "source" | "ref"
+    kind: str  # "header" | "profile" | "weight" | "limit" | "rule" | "formula" | "where" | "action" | "slot" | "ref"
     label: str
     index: int = -1
+    key: str = ""
     action_id: str = ""
-    tone: str = "normal"  # "muted" | "pos" | "neg" | "accent" | "normal"
+    tone: str = "normal"  # "muted" | "pos" | "min" | "accent" | "normal"
 
 
 def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
@@ -488,7 +618,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
         for idx, (expr, val) in enumerate(state.weights):
             bar = _format_weight_bar(val, width=7)
             arrow = "↑ max" if val > 0 else ("↓ min" if val < 0 else "· off")
-            tone = "pos" if val > 0 else ("neg" if val < 0 else "muted")
+            tone = "pos" if val > 0 else ("min" if val < 0 else "muted")
             items.append(
                 _WorkspaceItem(
                     kind="weight",
@@ -499,9 +629,18 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
             )
     else:
         items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  (no weights yet — press Enter to add)", tone="muted"))
-    items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  + Add Weight / Score Expression...", tone="accent"))
+    items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  + Add Weight / Ratio Expression...", tone="accent"))
 
-    items.append(_WorkspaceItem(kind="header", label="RULES, LIMITS & FORMULAS", tone="accent"))
+    items.append(_WorkspaceItem(kind="header", label="SAVED PREFERENCES  (Enter: hop · s: save · d: del)", tone="accent"))
+    if state.saved_profiles:
+        for pname in state.saved_profiles.keys():
+            if pname == state.profile:
+                items.append(_WorkspaceItem(kind="profile", key=pname, label=f" ★ {pname:<16} (active)", tone="pos"))
+            else:
+                items.append(_WorkspaceItem(kind="profile", key=pname, label=f"   {pname:<16} [Enter: switch]", tone="normal"))
+    items.append(_WorkspaceItem(kind="action", action_id="save_profile", label="  + Save Current Preferences As Profile...", tone="accent"))
+
+    items.append(_WorkspaceItem(kind="header", label="RULES, LIMITS & FORMULAS  (d: remove)", tone="accent"))
     for idx, lim in enumerate(state.limits):
         items.append(_WorkspaceItem(kind="limit", index=idx, label=f" Limit    {lim}"))
     for idx, rule in enumerate(state.rules):
@@ -512,18 +651,42 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
         items.append(_WorkspaceItem(kind="where", index=idx, label=f" Filter   {w_str}"))
     items.append(_WorkspaceItem(kind="action", action_id="add_constraint", label="  + Add Rule / Formula / Limit / Filter...", tone="accent"))
 
-    items.append(_WorkspaceItem(kind="header", label="DATA & PRESET", tone="accent"))
-    slots_txt = ", ".join(state.sources.keys()) if state.sources else "none"
-    items.append(_WorkspaceItem(kind="action", action_id="open_db", label=f" Main DB  {slots_txt}  [Enter: Open]", tone="normal"))
-    if state.references:
-        for rk, rcfg in state.references.items():
-            ref_name = Path(str(rcfg.get("source", ""))).name
-            items.append(_WorkspaceItem(kind="action", action_id="attach_ref", label=f" Ref DB   {ref_name} ({rcfg.get('match')})", tone="normal"))
-    else:
-        items.append(_WorkspaceItem(kind="action", action_id="attach_ref", label="  + Attach Reference DB (--ref)...", tone="accent"))
-    items.append(_WorkspaceItem(kind="action", action_id="pick_preset", label=f" Preset   {state.preset_name} ({state.profile})  [Enter: Switch]", tone="normal"))
-    items.append(_WorkspaceItem(kind="action", action_id="save_preset", label="  Save Customized Preset (.json)...", tone="accent"))
+    items.append(_WorkspaceItem(kind="header", label="DATABASES & REFERENCES  (Enter: repick · d: del)", tone="accent"))
+    for sname, scfg in state.sources.items():
+        src_name = Path(str(scfg.get("source", ""))).name
+        tbl = scfg.get("table")
+        src_desc = f"{src_name}:{tbl}" if tbl else src_name
+        items.append(_WorkspaceItem(kind="slot", key=sname, label=f" DB Slot  {sname:<8} <- {src_desc}", tone="normal"))
+    for rk, rcfg in state.references.items():
+        ref_name = Path(str(rcfg.get("source", ""))).name
+        cov = f" ({state.ref_stats[rk]})" if rk in state.ref_stats else ""
+        items.append(_WorkspaceItem(kind="ref", key=rk, label=f" Ref DB   {rk:<8} <- {ref_name} [{rcfg.get('match')}]{cov}", tone="normal"))
+    items.append(_WorkspaceItem(kind="action", action_id="open_db", label="  + Open / Replace Main DB...", tone="accent"))
+    items.append(_WorkspaceItem(kind="action", action_id="attach_ref", label="  + Attach Reference DB (--ref)...", tone="accent"))
+    items.append(_WorkspaceItem(kind="action", action_id="pick_preset", label=f"  Switch Preset File ({state.preset_name})...", tone="normal"))
     return items
+
+
+def _wrap_suggestion_lines(suggestions: Sequence[str], highlighted_idx: int, max_width: int, max_lines: int = 4) -> List[str]:
+    """Wraps field chips cleanly across multiple lines without overflowing `max_width`."""
+    lines: List[str] = []
+    curr = ""
+    for i, col in enumerate(suggestions):
+        chip = f"[{col}]" if i == highlighted_idx else col
+        candidate = f"{curr}  {chip}" if curr else chip
+        if len(candidate) > max_width and curr:
+            lines.append(curr)
+            curr = chip
+            if len(lines) >= max_lines - 1:
+                if i < len(suggestions) - 1:
+                    rem = len(suggestions) - i - 1
+                    curr = f"{curr} (+{rem} more)"[:max_width]
+                break
+        else:
+            curr = candidate
+    if curr and len(lines) < max_lines:
+        lines.append(curr[:max_width])
+    return lines
 
 
 def _render_result_lines(state: TuiSessionState, max_width: int) -> List[str]:
@@ -536,7 +699,7 @@ def _render_result_lines(state: TuiSessionState, max_width: int) -> List[str]:
                 "",
                 "Quick ways to start:",
                 "  • Press `o` to browse local .db / .csv / .json files",
-                "  • Press `p` to pick a preset (e.g. pc_build)",
+                "  • Press `p` to pick a saved preset",
                 "  • Press `/` to open the command palette",
             ]
         )
@@ -602,21 +765,24 @@ def run_curses_tui(state: TuiSessionState) -> None:
             "On Windows install `windows-curses` or use `ks serve` for the interactive Web Studio."
         ) from exc
 
-    C_CYAN, C_GREEN, C_RED, C_AMBER, C_DIM = 1, 2, 3, 4, 5
+    # Calm palette — intentionally avoids COLOR_RED / COLOR_MAGENTA which render bright pink in many themes
+    C_CYAN, C_GREEN, C_AMBER, C_DIM = 1, 2, 3, 4
 
     def _tone_attr(tone: str, selected: bool = False) -> int:
         base = {
             "accent": curses.color_pair(C_CYAN) | curses.A_BOLD,
             "pos": curses.color_pair(C_GREEN),
-            "neg": curses.color_pair(C_RED),
+            "min": curses.color_pair(C_AMBER),
             "muted": curses.color_pair(C_DIM) | curses.A_DIM,
         }.get(tone, curses.A_NORMAL)
-        return (base | curses.A_REVERSE) if selected else base
+        if selected:
+            return curses.A_REVERSE | (curses.color_pair(C_CYAN) if tone == "accent" else curses.A_NORMAL)
+        return base
 
     def _draw_box(stdscr: Any, y: int, x: int, h: int, w: int, title: str = "", active: bool = False) -> None:
         if h < 3 or w < 6:
             return
-        attr = curses.color_pair(C_CYAN) if active else curses.color_pair(C_DIM)
+        attr = curses.color_pair(C_CYAN) if active else (curses.color_pair(C_DIM) | curses.A_DIM)
         top_t = f" {title} " if title else ""
         top_fill = max(0, w - 3 - len(top_t))
         stdscr.addnstr(y, x, f"╭─{top_t}{'─' * top_fill}╮", w, attr | (curses.A_BOLD if active else 0))
@@ -636,10 +802,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
         validator: Optional[Any] = None,
     ) -> Optional[str]:
         h, w = stdscr.getmaxyx()
-        mw = min(max(50, int(w * 0.72)), max(40, w - 4))
+        mw = min(max(54, int(w * 0.78)), max(42, w - 4))
         sugg = list(suggestions or [])
         ex = list(examples or [])
-        mh = min(h - 2, 8 + (min(4, len(sugg)) + 1 if sugg else 0) + (min(3, len(ex)) + 1 if ex else 0))
+        inner_w = mw - 4
+        wrapped_preview = _wrap_suggestion_lines(sugg, 0, inner_w, max_lines=5) if sugg else []
+        mh = min(h - 2, 7 + (len(wrapped_preview) + 1 if sugg else 0) + (2 if ex else 0))
         my, mx = max(1, (h - mh) // 2), max(1, (w - mw) // 2)
 
         buf = list(initial)
@@ -648,7 +816,6 @@ def run_curses_tui(state: TuiSessionState) -> None:
         try:
             while True:
                 _draw_box(stdscr, my, mx, mh, mw, title=title, active=True)
-                inner_w = mw - 4
                 row_y = my + 1
                 stdscr.addnstr(row_y, mx + 2, prompt, inner_w, curses.A_BOLD)
                 row_y += 1
@@ -662,21 +829,23 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 if validator and text.strip():
                     try:
                         validator(text.strip())
-                        stdscr.addnstr(row_y, mx + 2, "✓ Looks valid", inner_w, curses.color_pair(C_GREEN))
+                        stdscr.addnstr(row_y, mx + 2, "✓ Valid expression", inner_w, curses.color_pair(C_GREEN))
                     except Exception as exc:
                         stdscr.addnstr(row_y, mx + 2, f"! {exc}", inner_w, curses.color_pair(C_AMBER))
                 else:
-                    stdscr.addnstr(row_y, mx + 2, "Enter: Confirm · Esc: Cancel" + (" · Tab: Insert field" if sugg else ""), inner_w, curses.A_DIM)
+                    hint_ctrl = "Enter: Confirm · Esc: Cancel" + (" · Tab: Insert selected field" if sugg else "")
+                    stdscr.addnstr(row_y, mx + 2, hint_ctrl, inner_w, curses.A_DIM)
                 row_y += 1
 
                 if sugg and row_y < my + mh - 2:
-                    stdscr.addnstr(row_y, mx + 2, "Available fields (↑/↓ or Tab to insert):", inner_w, curses.color_pair(C_CYAN))
+                    stdscr.addnstr(row_y, mx + 2, f"Available DB fields ({len(sugg)} — ←/→ pick, Tab insert):", inner_w, curses.color_pair(C_CYAN))
                     row_y += 1
-                    chips = []
-                    for i, c in enumerate(sugg[:12]):
-                        chips.append(f"[{c}]" if i == col_idx else c)
-                    line = "  ".join(chips)
-                    stdscr.addnstr(row_y, mx + 2, line, inner_w)
+                    wlines = _wrap_suggestion_lines(sugg, col_idx, inner_w, max_lines=max(1, (my + mh - 2) - row_y))
+                    for wl in wlines:
+                        stdscr.addnstr(row_y, mx + 2, wl, inner_w)
+                        row_y += 1
+                elif not sugg and row_y < my + mh - 2:
+                    stdscr.addnstr(row_y, mx + 2, "(No DB columns loaded yet — open a DB first to see field hints)", inner_w, curses.A_DIM)
                     row_y += 1
 
                 if ex and row_y < my + mh - 1:
@@ -685,7 +854,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 stdscr.move(input_row, input_col)
                 stdscr.refresh()
                 ch = stdscr.getch()
-                if ch == 27:  # Esc
+                if ch == 27:
                     return None
                 if ch in (10, 13, curses.KEY_ENTER):
                     res = "".join(buf).strip()
@@ -693,14 +862,14 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 if ch in (curses.KEY_BACKSPACE, 127, 8):
                     if buf:
                         buf.pop()
-                elif ch == 9 and sugg:  # Tab inserts highlighted field
+                elif ch == 9 and sugg:
                     token = sugg[col_idx % len(sugg)]
                     if buf and buf[-1].isalnum():
                         buf.append(" ")
                     buf.extend(list(token))
-                elif ch == curses.KEY_RIGHT and sugg:
+                elif ch in (curses.KEY_RIGHT, curses.KEY_DOWN) and sugg:
                     col_idx = (col_idx + 1) % len(sugg)
-                elif ch == curses.KEY_LEFT and sugg:
+                elif ch in (curses.KEY_LEFT, curses.KEY_UP) and sugg:
                     col_idx = (col_idx - 1) % len(sugg)
                 elif 32 <= ch <= 126:
                     buf.append(chr(ch))
@@ -711,7 +880,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
         if not choices:
             return None
         h, w = stdscr.getmaxyx()
-        mw = min(max(52, int(w * 0.68)), max(36, w - 4))
+        mw = min(max(54, int(w * 0.70)), max(36, w - 4))
         mh = min(h - 2, len(choices) + 5)
         my, mx = max(1, (h - mh) // 2), max(1, (w - mw) // 2)
         idx = 0
@@ -726,7 +895,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     break
                 name, desc = choices[ci]
                 row_txt = f"{name:<22} {desc}" if desc else name
-                attr = (curses.color_pair(C_CYAN) | curses.A_REVERSE) if ci == idx else curses.A_NORMAL
+                attr = curses.A_REVERSE if ci == idx else curses.A_NORMAL
                 stdscr.addnstr(my + 1 + r, mx + 2, row_txt.ljust(inner_w)[:inner_w], inner_w, attr)
             stdscr.addnstr(my + mh - 2, mx + 2, hint, inner_w, curses.A_DIM)
             stdscr.refresh()
@@ -740,8 +909,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
             elif ch in (10, 13, curses.KEY_ENTER):
                 return idx
 
-    def _action_open_db(stdscr: Any) -> None:
-        curr_dir = Path.cwd()
+    def _pick_file_path(stdscr: Any, modal_title: str, start_dir: Optional[Path] = None) -> Optional[str]:
+        curr_dir = (start_dir or Path.cwd()).resolve()
         while True:
             entries: List[Tuple[str, str, Optional[Path]]] = [("✎ Enter path manually...", "type any .db / .csv / .json path", None)]
             if curr_dir.parent != curr_dir:
@@ -758,76 +927,134 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 elif p.suffix.lower() in _DATA_EXTENSIONS:
                     entries.append((p.name, f"{p.suffix.lstrip('.').upper()} dataset", p))
 
-            pick = _modal_picker(stdscr, f"Open Data Source ({curr_dir.name})", [(a, b) for a, b, _ in entries])
+            pick = _modal_picker(stdscr, f"{modal_title} ({curr_dir.name})", [(a, b) for a, b, _ in entries])
             if pick is None:
-                return
+                return None
             _, _, target = entries[pick]
             if target is None:
-                manual = _modal_text_input(stdscr, "Open Data Source", "Enter file path (.db / .csv / .tsv / .json / .jsonl):")
-                if manual:
-                    try:
-                        state.load_from_source(manual)
-                    except Exception as exc:
-                        state.status_message = f"Could not open '{manual}': {exc}"
-                return
+                return _modal_text_input(stdscr, modal_title, "Enter file path (.db / .csv / .tsv / .json / .jsonl):")
             if target.is_dir():
                 curr_dir = target
                 continue
-            try:
-                state.load_from_source(str(target))
-            except Exception as exc:
-                state.status_message = f"Could not open '{target.name}': {exc}"
-            return
+            return str(target)
 
-    def _action_attach_ref(stdscr: Any) -> None:
+    def _action_open_db(stdscr: Any) -> None:
+        chosen = _pick_file_path(stdscr, "Open Main Data Source", state.base_dir)
+        if not chosen:
+            return
+        try:
+            state.load_from_source(chosen)
+        except Exception as exc:
+            state.status_message = f"Could not open '{chosen}': {exc}"
+
+    def _action_repick_slot(stdscr: Any, slot_name: str) -> None:
+        if slot_name not in state.sources:
+            return
+        scfg = state.sources[slot_name]
+        cur_src = str(scfg.get("source", ""))
+        opts = [
+            ("Pick a different table in DB", cur_src),
+            ("Pick a different DB/CSV file for this slot", "replaces slot file"),
+            ("Attach / replace Reference DB for this slot", "add benchmark / MSRP lookup"),
+            ("Remove this slot", "same as pressing 'd'"),
+        ]
+        pick = _modal_picker(stdscr, f"Slot '{slot_name}'", opts)
+        if pick is None:
+            return
+        if pick == 3:
+            state.remove_slot(slot_name)
+            return
+        if pick == 2:
+            _action_attach_ref(stdscr, forced_slot=slot_name)
+            return
+        src_path = cur_src
+        if pick == 1:
+            new_p = _pick_file_path(stdscr, f"Pick Data Source for '{slot_name}'", state.base_dir)
+            if not new_p:
+                return
+            src_path = str(Path(new_p).expanduser().resolve())
+        try:
+            schema = open_source(src_path).inspect()
+            tbl_name = scfg.get("table")
+            if len(schema.tables) > 1:
+                t_choices = [(t.name, f"{t.row_count} rows ({len(t.columns)} cols)") for t in schema.tables]
+                t_pick = _modal_picker(stdscr, f"Select Table for Slot '{slot_name}'", t_choices)
+                if t_pick is None:
+                    return
+                tbl_name = schema.tables[t_pick].name
+            elif schema.tables:
+                tbl_name = schema.tables[0].name if schema.kind == "sqlite" else None
+            scfg["source"] = src_path
+            if tbl_name:
+                scfg["table"] = tbl_name
+            else:
+                scfg.pop("table", None)
+            state.dirty = True
+            state._rebuild_columns_and_pools()
+            state.re_solve()
+            state.status_message = f"Updated slot '{slot_name}' -> {Path(src_path).name}"
+        except Exception as exc:
+            state.status_message = f"Slot update failed: {exc}"
+
+    def _action_attach_ref(stdscr: Any, forced_slot: Optional[str] = None, forced_ref_key: Optional[str] = None) -> None:
         if not state.sources:
             state.status_message = "Open a Main DB first before attaching a Reference DB."
             return
         slots = list(state.sources.keys())
-        target_slot = slots[0]
-        if len(slots) > 1:
+        target_slot = forced_slot or slots[0]
+        if not forced_slot and forced_ref_key:
+            for sn, sc in state.sources.items():
+                r = sc.get("ref")
+                if r == forced_ref_key or (isinstance(r, list) and forced_ref_key in r):
+                    target_slot = sn
+                    break
+        elif not forced_slot and len(slots) > 1:
             s_pick = _modal_picker(stdscr, "Select Slot to Enrich with Reference DB", [(s, str(state.sources[s].get("source", ""))) for s in slots])
             if s_pick is None:
                 return
             target_slot = slots[s_pick]
-        local_files = discover_local_data_files(state.base_dir)
-        choices = [("✎ Enter reference path manually...", "CSV / SQLite / JSON benchmark or price sheet")] + [
-            (f.name, "local file") for f in local_files
-        ]
-        pick = _modal_picker(stdscr, f"Attach Reference DB -> {target_slot}", choices)
-        if pick is None:
-            return
-        if pick == 0:
-            ref_path = _modal_text_input(stdscr, "Reference DB Path", "Path to Reference DB (.csv / .db / .json):")
-        else:
-            ref_path = str(local_files[pick - 1])
+
+        ref_path = _pick_file_path(stdscr, f"Attach Reference DB -> {target_slot}", state.base_dir)
         if not ref_path:
             return
+        try:
+            schema = open_source(ref_path).inspect()
+            ref_tbl = None
+            if len(schema.tables) > 1:
+                t_pick = _modal_picker(
+                    stdscr,
+                    f"Select Table in '{Path(ref_path).name}'",
+                    [(t.name, f"{t.row_count} rows") for t in schema.tables],
+                )
+                if t_pick is None:
+                    return
+                ref_tbl = schema.tables[t_pick].name
+        except Exception as exc:
+            state.status_message = f"Could not inspect reference DB: {exc}"
+            return
+
+        slot_cols = [c.split(".", 1)[-1] for c in state.available_columns if c.startswith(f"{target_slot}.") or "." not in c]
         match_in = _modal_text_input(
             stdscr,
-            "Match Expression",
-            "How to match candidate -> reference (e.g. 'title~model' for fuzzy token, 'id=id' for exact):",
+            "Match Rule",
+            "How to match left_col~right_col ('~' fuzzy token, '=' exact):",
             initial="title~model",
+            suggestions=slot_cols[:12],
+            examples=["title~model", "sku=id"],
         )
+        if not match_in:
+            return
         try:
-            state.attach_reference(target_slot, ref_path, match_expr=match_in)
+            state.attach_reference(target_slot, ref_path, ref_table=ref_tbl, match_expr=match_in)
         except Exception as exc:
             state.status_message = f"Reference attach failed: {exc}"
 
     def _action_pick_preset(stdscr: Any) -> None:
         state.refresh_discovered_presets()
-        if not state.available_presets:
-            path_in = _modal_text_input(stdscr, "Load Preset File", "No presets installed in search dirs. Enter preset .json path:")
-            if path_in:
-                try:
-                    state.load_from_preset(path_in)
-                except Exception as exc:
-                    state.status_message = f"Preset error: {exc}"
-            return
         presets = list(state.available_presets.values())
         choices = [(p.name, f"[{p.mode}] {p.title} (profiles: {', '.join(p.profile_names())})") for p in presets]
         choices.append(("✎ Load preset file path...", "open .json/.toml file"))
-        pick = _modal_picker(stdscr, "Choose Preset", choices)
+        pick = _modal_picker(stdscr, "Switch Preset", choices)
         if pick is None:
             return
         if pick == len(presets):
@@ -842,7 +1069,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
         prof_names = chosen.profile_names()
         chosen_prof = prof_names[0] if prof_names else None
         if len(prof_names) > 1:
-            p_pick = _modal_picker(stdscr, f"Choose Profile for '{chosen.name}'", [(n, "") for n in prof_names])
+            p_pick = _modal_picker(stdscr, f"Choose Preference Profile for '{chosen.name}'", [(n, "") for n in prof_names])
             if p_pick is not None:
                 chosen_prof = prof_names[p_pick]
         try:
@@ -850,13 +1077,28 @@ def run_curses_tui(state: TuiSessionState) -> None:
         except Exception as exc:
             state.status_message = f"Failed loading preset: {exc}"
 
+    def _action_save_preference(stdscr: Any) -> None:
+        name_in = _modal_text_input(
+            stdscr,
+            "Save Preference Profile",
+            "Profile name to save (hop between saved profiles anytime with Enter or 'h'):",
+            initial=state.profile if state.profile and state.profile != "default" else "my_prefs",
+            examples=["gaming", "budget_quiet", "max_value"],
+        )
+        if not name_in:
+            return
+        try:
+            state.save_preference_profile(name_in, persist=True)
+        except Exception as exc:
+            state.status_message = f"Save failed: {exc}"
+
     def _action_add_weight(stdscr: Any) -> None:
         expr = _modal_text_input(
             stdscr,
             "Add Preference Weight",
-            "Column or expression to prefer (e.g. 'ref.score', 'price', 'cpu.score / gpu.score'):",
+            "Field or expression to score (←/→ selects field below, Tab inserts it):",
             suggestions=state.available_columns,
-            examples=["gpu.ref.score", "cpu.score / gpu.score"],
+            examples=["gpu.ref.score", "cpu.score / gpu.ref.score"],
             validator=SafeExpression,
         )
         if not expr:
@@ -864,7 +1106,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
         w_str = _modal_text_input(
             stdscr,
             "Weight Direction & Strength",
-            f"Enter weight for '{expr}' (+ maximizes, - minimizes, e.g. 0.5 or -0.4):",
+            f"Enter signed weight for '{expr}' (+ maximizes, - minimizes, e.g. 0.5 or -0.4):",
             initial="0.5",
         )
         if not w_str:
@@ -876,53 +1118,53 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
     def _action_add_constraint(stdscr: Any) -> None:
         kinds = [
+            ("Formula  (derived computed column)", "e.g. deal_pct = (ref.msrp - price) / ref.msrp * 100"),
             ("Rule     (cross-slot compatibility)", "e.g. cpu.socket == mobo.socket or cpu.score / gpu.score < 1"),
             ("Limit    (aggregate cap / floor)", "e.g. sum(price) <= 950 or count <= 5"),
-            ("Formula  (derived computed column)", "e.g. deal_pct = (ref.msrp - price) / ref.msrp * 100"),
-            ("Filter   (row pre-filter)", "e.g. price <= 600 and vram >= 8"),
+            ("Filter   (row pre-filter)", "e.g. price <= 600 and condition != 'for_parts'"),
         ]
-        pick = _modal_picker(stdscr, "What would you like to add?", kinds)
+        pick = _modal_picker(stdscr, "Create Formula, Rule, Limit, or Filter", kinds)
         if pick is None:
             return
         try:
             if pick == 0:
                 val = _modal_text_input(
                     stdscr,
-                    "Add Compatibility Rule",
-                    "Write boolean rule expression:",
+                    "Create Formula",
+                    "Write 'new_name = expression' (Tab inserts highlighted DB field):",
                     suggestions=state.available_columns,
-                    examples=["cpu.socket == mobo.socket", "cpu.score / gpu.score < 1"],
+                    examples=["val = ref.score / price", "discount = (ref.msrp - price) / ref.msrp * 100"],
+                    validator=lambda s: parse_formulas([s]),
+                )
+                if val:
+                    state.add_formula(val)
+            elif pick == 1:
+                val = _modal_text_input(
+                    stdscr,
+                    "Add Compatibility Rule",
+                    "Write boolean rule expression (Tab inserts highlighted DB field):",
+                    suggestions=state.available_columns,
+                    examples=["cpu.socket == mobo.socket", "cpu.ref.score / gpu.ref.score < 1"],
                     validator=RuleSpec.parse,
                 )
                 if val:
                     state.add_rule(val)
-            elif pick == 1:
+            elif pick == 2:
                 val = _modal_text_input(
                     stdscr,
                     "Add Resource Limit",
-                    "Write aggregate limit expression:",
+                    "Write aggregate limit (Tab inserts highlighted DB field):",
                     suggestions=state.available_columns,
                     examples=["sum(price) <= 950", "count <= 4"],
                     validator=LimitSpec.parse,
                 )
                 if val:
                     state.add_limit(val)
-            elif pick == 2:
-                val = _modal_text_input(
-                    stdscr,
-                    "Add Derived Formula",
-                    "Write 'column_name = expression':",
-                    suggestions=state.available_columns,
-                    examples=["val_per_dollar = ref.score / price"],
-                    validator=lambda s: parse_formulas([s]),
-                )
-                if val:
-                    state.add_formula(val)
             elif pick == 3:
                 val = _modal_text_input(
                     stdscr,
                     "Add Row Filter (--where)",
-                    "Write filter predicate:",
+                    "Write filter predicate (Tab inserts highlighted DB field):",
                     suggestions=state.available_columns,
                     examples=["price <= 600"],
                     validator=SafeExpression,
@@ -934,15 +1176,18 @@ def run_curses_tui(state: TuiSessionState) -> None:
 
     def _action_command_palette(stdscr: Any) -> None:
         cmds = [
-            ("/open", "Open SQLite / CSV / JSON database"),
+            ("/open", "Open / Replace Main SQLite / CSV / JSON database"),
             ("/ref", "Attach a Reference DB (--ref)"),
-            ("/preset", "Switch preset or profile"),
+            ("/save-pref", "Save current preferences as named profile (persists for reuse)"),
+            ("/hop", "Cycle / hop between saved preference profiles"),
+            ("/preset", "Load a saved preset file or installed registry preset"),
             ("/weight", "Add a weighted column or ratio expression"),
-            ("/rule", "Add constraint or formula (rule / limit / formula / filter)"),
-            ("/mode", "Switch mode (solve / basket / rank)"),
+            ("/formula", "Create a new formula using available DB fields"),
+            ("/rule", "Add constraint (Rule / Limit / Filter)"),
+            ("/mode", "Switch optimization mode (solve / basket / rank)"),
             ("/explain", "Toggle normalized score breakdown"),
-            ("/save", "Save customized preset to .json"),
-            ("/help", "Show keyboard & mouse help"),
+            ("/export", "Export preset to custom .json path"),
+            ("/help", "Show keyboard & mouse controls"),
         ]
         pick = _modal_picker(stdscr, "/ Command Palette", cmds)
         if pick is None:
@@ -952,24 +1197,28 @@ def run_curses_tui(state: TuiSessionState) -> None:
             _action_open_db(stdscr)
         elif cmd == "/ref":
             _action_attach_ref(stdscr)
+        elif cmd == "/save-pref":
+            _action_save_preference(stdscr)
+        elif cmd == "/hop":
+            state.cycle_profile()
         elif cmd == "/preset":
             _action_pick_preset(stdscr)
         elif cmd == "/weight":
             _action_add_weight(stdscr)
-        elif cmd == "/rule":
+        elif cmd in ("/formula", "/rule"):
             _action_add_constraint(stdscr)
         elif cmd == "/mode":
             state.cycle_mode()
         elif cmd == "/explain":
             state.explain = not state.explain
             state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
-        elif cmd == "/save":
-            out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
+        elif cmd == "/export":
+            out_p = _modal_text_input(stdscr, "Export Preset JSON", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
             if out_p:
                 try:
                     state.export_preset(out_p)
                 except Exception as exc:
-                    state.status_message = f"Save failed: {exc}"
+                    state.status_message = f"Export failed: {exc}"
         elif cmd == "/help":
             _modal_picker(
                 stdscr,
@@ -977,11 +1226,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 [
                     ("↑ / ↓", "Move selection in active pane"),
                     ("← / → or - / +", "Adjust weight (-0.10 / +0.10; [ / ] for ±0.05)"),
-                    ("Enter", "Open action / add item / toggle selection"),
-                    ("Tab", "Switch focus between Controls and Results"),
-                    ("d / Backspace", "Delete highlighted weight, limit, rule, formula, or filter"),
-                    ("/", "Open Command Palette (/open, /ref, /preset, /weight, ...)"),
-                    ("m / p / o / e / s", "Mode / Preset / Open DB / Explain / Save preset"),
+                    ("Enter", "Hop profile / Repick DB slot / Open '+ Add' composer"),
+                    ("d / Backspace", "Delete weight, profile, formula, limit, rule, DB slot, or Ref DB"),
+                    ("s / h", "Save current preferences as profile / Hop to next profile"),
+                    ("o / p / m / e", "Open Main DB / Preset picker / Cycle Mode / Explain toggle"),
+                    ("Tab / /", "Switch Config<->Results pane / Open Command Palette"),
                     ("q", "Quit TUI"),
                 ],
                 hint="Press Esc or Enter to close",
@@ -1002,9 +1251,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
             return
         pick = _modal_picker(
             stdscr,
-            "◈ Welcome to Knapset v2 — Pick a DB or Preset to begin",
+            "◈ Welcome to Knapset v2 — Pick a DB or Saved Preset",
             [(a, b) for a, b, _ in choices],
-            hint="↑↓ Choose · Enter Open · Esc Stay in Workspace",
+            hint="↑↓ Choose · Enter Open · Esc Empty Workspace",
         )
         if pick is None:
             return
@@ -1036,7 +1285,6 @@ def run_curses_tui(state: TuiSessionState) -> None:
             curses.use_default_colors()
             curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
             curses.init_pair(C_GREEN, curses.COLOR_GREEN, -1)
-            curses.init_pair(C_RED, curses.COLOR_RED, -1)
             curses.init_pair(C_AMBER, curses.COLOR_YELLOW, -1)
             curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
 
@@ -1050,13 +1298,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
         while True:
             stdscr.erase()
             h, w = stdscr.getmaxyx()
-            left_w = max(36, min(58, int(w * 0.45)))
+            left_w = max(38, min(62, int(w * 0.46)))
             right_x = left_w + 1
             right_w = max(24, w - right_x)
 
-            # Top Antigravity-style minimal header
             dirty = "*" if state.dirty else ""
-            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} ({state.profile})"
+            hdr_left = f" ◈ knapset v2 │ [{state.mode}] │ {state.preset_name}{dirty} │ pref:{state.profile}"
             hdr_right = f"{len(state.results)} result(s) │ / Cmds │ ? Help "
             stdscr.addnstr(0, 0, hdr_left, w - 1, curses.color_pair(C_CYAN) | curses.A_BOLD)
             if w > len(hdr_left) + len(hdr_right) + 2:
@@ -1066,13 +1313,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
             pane_h = max(6, h - 3)
             inner_h = pane_h - 2
 
-            # Left panel: Unified interactive controls
-            _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Tune Preferences & Constraints", active=not focus_results)
+            _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Workspace Controls", active=not focus_results)
             ws_items = _build_workspace_items(state)
             left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
-            if ws_items and ws_items[left_cursor].kind == "header":
-                if left_cursor + 1 < len(ws_items):
-                    left_cursor += 1
+            if ws_items and ws_items[left_cursor].kind == "header" and left_cursor + 1 < len(ws_items):
+                left_cursor += 1
             if left_cursor < left_scroll:
                 left_scroll = left_cursor
             elif left_cursor >= left_scroll + inner_h:
@@ -1088,7 +1333,6 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 line_text = it.label.ljust(left_w - 3)[: left_w - 3]
                 stdscr.addnstr(pane_y + 1 + r, 2, line_text, left_w - 3, attr)
 
-            # Right panel: Rounded solution cards
             ex_tag = " · Explain ON" if state.explain else ""
             _draw_box(stdscr, pane_y, right_x, pane_h, right_w, title=f"Top Solutions ({state.mode}){ex_tag}", active=focus_results)
             res_lines = _render_result_lines(state, right_w - 3)
@@ -1102,23 +1346,18 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 attr = curses.color_pair(C_GREEN) if txt.startswith("╭─") else (curses.A_DIM if txt.startswith("╰") else curses.A_NORMAL)
                 stdscr.addnstr(pane_y + 1 + r, right_x + 2, txt, right_w - 3, attr)
 
-            # Bottom status & clean shortcut strip
             stdscr.addnstr(h - 2, 1, state.status_message, w - 2, curses.color_pair(C_AMBER) if state.status_message.startswith("Check ") else curses.A_DIM)
-            footer = " ↑↓:Select  ←/→ or -/+:Tune Weight  Enter:Open/Add  Tab:Switch Pane  /:Palette  o:Open DB  p:Preset  e:Explain  s:Save  q:Quit "
+            footer = " ↑↓:Nav  ←/→:Weight  Enter:Pick/Hop  d:Del  s:Save Pref  h:Hop Pref  o:DB  p:Preset  /:Cmds  q:Quit "
             stdscr.addnstr(h - 1, 0, footer.ljust(w)[: w - 1], w - 1, curses.A_REVERSE)
             stdscr.refresh()
 
             ch = stdscr.getch()
             if ch in (ord("q"), ord("Q")):
                 break
-            if ch == 9:  # Tab
+            if ch == 9:
                 focus_results = not focus_results
                 continue
-            if ch == ord("/"):
-                _action_command_palette(stdscr)
-                continue
-            if ch == ord("?"):
-                state.status_message = "Tip: Press / for Command Palette or use ↑↓ + Enter on any '+ Add' row."
+            if ch in (ord("/"), ord("?")):
                 _action_command_palette(stdscr)
                 continue
             if ch in (ord("o"), ord("O")):
@@ -1126,6 +1365,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 continue
             if ch in (ord("p"), ord("P")):
                 _action_pick_preset(stdscr)
+                continue
+            if ch in (ord("h"), ord("H")):
+                state.cycle_profile()
                 continue
             if ch in (ord("m"), ord("M")):
                 state.cycle_mode()
@@ -1135,12 +1377,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
                 continue
             if ch in (ord("s"), ord("S")):
-                out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
-                if out_p:
-                    try:
-                        state.export_preset(out_p)
-                    except Exception as exc:
-                        state.status_message = f"Save failed: {exc}"
+                _action_save_preference(stdscr)
                 continue
 
             if ch == curses.KEY_MOUSE:
@@ -1154,8 +1391,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             it = ws_items[left_cursor]
                             if it.kind == "weight" and mx >= left_w - 14:
                                 state.adjust_weight(it.index, -0.1 if mx < left_w - 7 else 0.1)
-                            elif bstate & (curses.BUTTON1_DOUBLE_CLICKED | curses.BUTTON1_CLICKED) and it.kind == "action":
-                                ch = 10  # dispatch Enter handler below
+                            elif bstate & (curses.BUTTON1_DOUBLE_CLICKED | curses.BUTTON1_CLICKED) and it.kind in ("action", "profile", "slot", "ref"):
+                                ch = 10
                     elif pane_y < my < pane_y + pane_h - 1 and mx >= right_x:
                         focus_results = True
                 except Exception:
@@ -1200,6 +1437,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 cur = ws_items[left_cursor]
                 if cur.kind == "weight":
                     state.remove_weight(cur.index)
+                elif cur.kind == "profile":
+                    state.delete_preference_profile(cur.key)
+                elif cur.kind == "slot":
+                    state.remove_slot(cur.key)
+                elif cur.kind == "ref":
+                    state.detach_reference(cur.key)
                 elif cur.kind == "limit" and 0 <= cur.index < len(state.limits):
                     state.limits.pop(cur.index)
                     state.re_solve()
@@ -1223,6 +1466,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 cur = ws_items[left_cursor]
                 if cur.action_id == "add_weight":
                     _action_add_weight(stdscr)
+                elif cur.action_id == "save_profile":
+                    _action_save_preference(stdscr)
                 elif cur.action_id == "add_constraint":
                     _action_add_constraint(stdscr)
                 elif cur.action_id == "open_db":
@@ -1231,13 +1476,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     _action_attach_ref(stdscr)
                 elif cur.action_id == "pick_preset":
                     _action_pick_preset(stdscr)
-                elif cur.action_id == "save_preset":
-                    out_p = _modal_text_input(stdscr, "Save Preset", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
-                    if out_p:
-                        try:
-                            state.export_preset(out_p)
-                        except Exception as exc:
-                            state.status_message = f"Save failed: {exc}"
+                elif cur.kind == "profile":
+                    state.switch_profile(cur.key)
+                elif cur.kind == "slot":
+                    _action_repick_slot(stdscr, cur.key)
+                elif cur.kind == "ref":
+                    _action_attach_ref(stdscr, forced_ref_key=cur.key)
                 elif cur.kind == "weight":
                     state.adjust_weight(cur.index, 0.1)
 

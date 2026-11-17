@@ -7,17 +7,20 @@ live re-solving, mode cycling, and saving customized presets without requiring a
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from preset_loader import load_preset
+from preset_loader import discover_presets, load_preset
 from tui import (
     TuiSessionState,
     _build_workspace_items,
     _format_weight_bar,
     _render_result_lines,
+    _wrap_suggestion_lines,
     discover_local_data_files,
 )
 
@@ -119,6 +122,69 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertIn("cpu.score / gpu.ref.score < 1", loaded_cfg.rules)
             res_exec = loaded_cfg.execute()
             self.assertEqual(len(res_exec["results"]), len(state.results))
+
+    def test_save_and_hop_preferences_delete_dbs_and_field_hints(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg_dir = root / "user_cfg"
+            csv_main = root / "gpus.csv"
+            csv_main.write_text("title,price,vram\nCardA RTX 3080,380,10\nCardB RTX 4070,520,12\n", encoding="utf-8")
+            csv_ref = root / "ref.csv"
+            csv_ref.write_text("model,score,msrp\nRTX 3080,25200,699\nRTX 4070,28500,599\n", encoding="utf-8")
+
+            with patch.dict(os.environ, {"KNAPSET_CONFIG_DIR": str(cfg_dir)}):
+                state = TuiSessionState()
+                state.load_from_source(str(csv_main))
+                state.attach_reference("gpus", str(csv_ref), match_expr="title~model")
+                self.assertIn("gpus_ref", state.references)
+                self.assertIn("ref.score", state.available_columns)
+
+                # Field hint wrapper preserves available columns across lines
+                wrapped = _wrap_suggestion_lines(state.available_columns, 1, max_width=28, max_lines=4)
+                self.assertGreaterEqual(len(wrapped), 1)
+                self.assertTrue(any("[" in ln and "]" in ln for ln in wrapped))
+
+                # Save profile A ("value"), tweak weights and save profile B ("max_perf"), then hop between them
+                state.weights = [("ref.score", 0.5), ("price", -0.5)]
+                state.re_solve()
+                saved_path = state.save_preference_profile("value", persist=True)
+                self.assertIsNotNone(saved_path)
+                assert saved_path is not None and saved_path.is_file()
+
+                state.weights = [("ref.score", 1.0)]
+                state.re_solve()
+                state.save_preference_profile("max_perf", persist=True)
+                self.assertEqual(state.results[0]["row"]["title"], "CardB RTX 4070")
+
+                # Hop back to "value" profile
+                state.switch_profile("value")
+                self.assertEqual(state.profile, "value")
+                self.assertEqual(state.results[0]["row"]["title"], "CardA RTX 3080")
+
+                # Cycle forward back to "max_perf"
+                state.cycle_profile()
+                self.assertEqual(state.profile, "max_perf")
+
+                # Delete profile "value"
+                state.delete_preference_profile("value")
+                self.assertNotIn("value", state.saved_profiles)
+
+                # Persisted preset is discoverable for future sessions
+                discovered = discover_presets()
+                self.assertIn(state.preset_name, discovered)
+
+                # Detach Reference DB & remove slot DB cleanly
+                ws_before = _build_workspace_items(state)
+                self.assertTrue(any(it.kind == "ref" for it in ws_before))
+                self.assertTrue(any(it.kind == "slot" for it in ws_before))
+
+                state.detach_reference("gpus_ref")
+                self.assertNotIn("gpus_ref", state.references)
+                self.assertNotIn("ref.score", state.available_columns)
+
+                state.remove_slot("gpus")
+                self.assertEqual(state.sources, {})
+                self.assertEqual(state.results, [])
 
 
 if __name__ == "__main__":

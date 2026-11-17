@@ -463,11 +463,25 @@ def save_preset(preset: PresetConfig | Dict[str, Any], path: str | Path, overwri
     return p
 
 
+def get_user_presets_dir() -> Path:
+    """Returns the writable persistent user presets directory (honors KNAPSET_HOME/XDG_CONFIG_HOME)."""
+    import os
+
+    if os.environ.get("KNAPSET_HOME", "").strip():
+        return (get_plugins_root() / "presets").resolve()
+    if os.environ.get("KNAPSET_CONFIG_DIR", "").strip():
+        return (get_config_dir() / "presets").resolve()
+    xdg_cfg = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(xdg_cfg).expanduser().resolve() if xdg_cfg else (Path.home() / ".config")
+    return (base / "knapset" / "presets").resolve()
+
+
 def get_presets_dirs() -> List[Path]:
-    """Returns deduplicated preset search directories (cwd presets, user plugins/presets, config/presets, bundled)."""
+    """Returns deduplicated preset search directories (cwd presets, user config, plugins/presets, bundled)."""
     dirs: List[Path] = []
     candidates = [
         Path.cwd() / "presets",
+        get_user_presets_dir(),
         get_plugins_root() / "presets",
         get_config_dir() / "presets",
         get_data_dir() / "presets",
