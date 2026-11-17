@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -9,7 +9,8 @@ description = "Dependency-free Python framework for analyzing marketplace listin
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "knapset-dev", email = "knapset-dev@users.noreply.github.com" }]
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
@@ -17,11 +18,16 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Topic :: System :: Hardware",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
+
+[project.urls]
+Homepage = "https://github.com/knapset-dev/knapset"
+Repository = "https://github.com/knapset-dev/knapset"
+Issues = "https://github.com/knapset-dev/knapset/issues"
+Releases = "https://github.com/knapset-dev/knapset/releases"
 
 [project.scripts]
 knapset = "main:main"
