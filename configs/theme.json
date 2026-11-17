@@ -1,0 +1,32 @@
+{
+  "schema_version": "2.0",
+  "active_theme": "agy-dark",
+  "colors": {
+    "accent": 51,
+    "positive": 46,
+    "minimize": 213,
+    "warning": 220,
+    "muted": 250,
+    "selection_fg": 51,
+    "selection_bg": 236,
+    "bar_fg": 255,
+    "bar_bg": 235
+  },
+  "basic_colors": {
+    "accent": "cyan",
+    "positive": "green",
+    "minimize": "magenta",
+    "warning": "yellow",
+    "muted": "white",
+    "selection_fg": "cyan",
+    "selection_bg": "default",
+    "bar_fg": "white",
+    "bar_bg": "default"
+  },
+  "symbols": {
+    "fill": "█",
+    "half": "▌",
+    "empty": "░",
+    "cursor": "▸"
+  }
+}

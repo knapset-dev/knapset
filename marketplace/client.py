@@ -75,6 +75,8 @@ SUBSYSTEMS_MAP = {
     "extensions": "extensions",
     "preset": "presets",
     "presets": "presets",
+    "theme": "themes",
+    "themes": "themes",
 }
 
 
@@ -128,6 +130,8 @@ TYPE_ALIASES = {
     "domain": "extension",
     "preset": "presets",
     "presets": "presets",
+    "theme": "themes",
+    "themes": "themes",
 }
 
 
@@ -270,9 +274,11 @@ class MarketplaceClient:
         bundles = []
         modules_dir = base_dir / "modules"
         if modules_dir.is_dir():
-            for jf in modules_dir.rglob("*.json"):
+            for jf in sorted(modules_dir.rglob("*.json")):
                 try:
-                    modules.append(json.loads(jf.read_text(encoding="utf-8")))
+                    data = json.loads(jf.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and data.get("subsystem") and data.get("download_url"):
+                        modules.append(data)
                 except Exception:
                     pass
         bundles_dir = base_dir / "bundles"
@@ -567,17 +573,31 @@ class MarketplaceClient:
             return True, f"Installed tag '{tag_name}' ({len(matched)} modules):\n" + "\n".join(results)
 
         # Strip optional explicit single-item prefixes
+        scoped_subsystems: Optional[Tuple[str, ...]] = None
         if target_norm.startswith("plugin:"):
             target_norm = target_norm[len("plugin:") :].strip()
         elif target_norm.startswith("module:"):
             target_norm = target_norm[len("module:") :].strip()
         elif target_norm.startswith("extension:"):
             target_norm = target_norm[len("extension:") :].strip()
+            scoped_subsystems = ("extension", "extensions")
+        elif target_norm.startswith("preset:"):
+            target_norm = target_norm[len("preset:") :].strip()
+            scoped_subsystems = ("preset", "presets")
+        elif target_norm.startswith("theme:"):
+            target_norm = target_norm[len("theme:") :].strip()
+            scoped_subsystems = ("theme", "themes")
 
         # 4. Single Module installation (with Zero-Prefix Smart Auto-Resolution)
         index = self.fetch_registry_index(force_refresh=should_refresh)
         m_data = next(
-            (m for m in index.get("modules", []) if m.get("name", "").lower() == target_norm), None
+            (
+                m
+                for m in index.get("modules", [])
+                if m.get("name", "").lower() == target_norm
+                and (scoped_subsystems is None or str(m.get("subsystem", "")).lower() in scoped_subsystems)
+            ),
+            None,
         )
         if not m_data:
             # Check bundles (e.g. 'pc-starter-kit', 'photo-kit')
@@ -711,8 +731,12 @@ class MarketplaceClient:
         # Single-file installation
         if manifest.source_type == "single_file":
             dl_ext = Path(manifest.download_url.split("?")[0]).suffix.lower()
-            is_preset_data = manifest.subsystem in ("preset", "presets") or dl_ext in (".json", ".toml")
-            ext = dl_ext if (is_preset_data and dl_ext in (".json", ".toml")) else (".json" if is_preset_data else ".py")
+            is_theme_data = manifest.subsystem in ("theme", "themes")
+            is_preset_data = (not is_theme_data) and (manifest.subsystem in ("preset", "presets") or dl_ext in (".json", ".toml"))
+            if is_theme_data:
+                ext = ".json"
+            else:
+                ext = dl_ext if (is_preset_data and dl_ext in (".json", ".toml")) else (".json" if is_preset_data else ".py")
             dest_file = target_modules_dir / f"{manifest.name}{ext}"
             if not dest_file.resolve().is_relative_to(target_modules_dir.resolve()):
                 return fail_install(f"Security violation: path traversal detected for module '{manifest.name}'.")
@@ -732,7 +756,17 @@ class MarketplaceClient:
                 return fail_install(f"SHA256 mismatch! Expected {manifest.sha256}, got {computed_sha}")
 
             code_text = code_bytes.decode("utf-8", errors="replace")
-            if is_preset_data:
+            if is_theme_data:
+                try:
+                    from theme_config import validate_theme_dict
+
+                    theme_obj = json.loads(code_text)
+                    if isinstance(theme_obj, dict) and "name" not in theme_obj:
+                        theme_obj["name"] = manifest.name
+                    validate_theme_dict(theme_obj)
+                except Exception as exc:
+                    return fail_install(f"Invalid theme schema in '{manifest.name}': {exc}")
+            elif is_preset_data:
                 try:
                     from preset_loader import PresetConfig
 
@@ -944,6 +978,16 @@ class MarketplaceClient:
             elif dest_path.is_dir():
                 shutil.rmtree(dest_path)
 
+            # Reset active theme if the removed item was active
+            try:
+                from theme_config import load_active_theme, reset_active_theme
+
+                if (dest_path.parent.name == "themes" or (clean_name in installed and installed[clean_name].subsystem in ("theme", "themes"))):
+                    if load_active_theme().name == clean_name:
+                        reset_active_theme()
+            except Exception:
+                pass
+
             if clean_name in installed:
                 del installed[clean_name]
                 self._save_installed_records(installed)
@@ -1105,16 +1149,28 @@ class MarketplaceClient:
             current_sha = hashlib.sha256(path.read_bytes()).hexdigest()
             violations: List[str] = []
             warnings: List[str] = []
-            try:
-                from preset_loader import load_preset
-                load_preset(path)
-            except Exception as exc:
-                violations.append(f"Invalid preset schema: {exc}")
+            is_theme = subsystem in ("theme", "themes") or path.parent.name == "themes"
+            if is_theme:
+                try:
+                    from theme_config import validate_theme_dict
+
+                    data = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(data, dict) and "name" not in data:
+                        data["name"] = path.stem.lower()
+                    validate_theme_dict(data)
+                except Exception as exc:
+                    violations.append(f"Invalid theme schema: {exc}")
+            else:
+                try:
+                    from preset_loader import load_preset
+                    load_preset(path)
+                except Exception as exc:
+                    violations.append(f"Invalid preset schema: {exc}")
             is_safe = len(violations) == 0
             return {
                 "name": path.name,
                 "path": str(path),
-                "subsystem": "preset",
+                "subsystem": "themes" if is_theme else "preset",
                 "version": "2.0",
                 "status": "HEALTHY" if is_safe else "UNSAFE",
                 "exists": True,
@@ -1210,12 +1266,24 @@ class MarketplaceClient:
             if file_path.is_file() and file_path.suffix.lower() in (".json", ".toml"):
                 from marketplace.security import SecurityReport
                 current_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
-                try:
-                    from preset_loader import load_preset
-                    load_preset(file_path)
-                    sec_report = SecurityReport(is_safe=True)
-                except Exception as exc:
-                    sec_report = SecurityReport(is_safe=False, violations=[f"Invalid preset: {exc}"])
+                if rec.subsystem in ("theme", "themes") or file_path.parent.name == "themes":
+                    try:
+                        from theme_config import validate_theme_dict
+
+                        t_data = json.loads(file_path.read_text(encoding="utf-8"))
+                        if isinstance(t_data, dict) and "name" not in t_data:
+                            t_data["name"] = rec.name
+                        validate_theme_dict(t_data)
+                        sec_report = SecurityReport(is_safe=True)
+                    except Exception as exc:
+                        sec_report = SecurityReport(is_safe=False, violations=[f"Invalid theme: {exc}"])
+                else:
+                    try:
+                        from preset_loader import load_preset
+                        load_preset(file_path)
+                        sec_report = SecurityReport(is_safe=True)
+                    except Exception as exc:
+                        sec_report = SecurityReport(is_safe=False, violations=[f"Invalid preset: {exc}"])
             elif file_path.is_file():
                 current_sha = hashlib.sha256(file_path.read_bytes()).hexdigest()
                 sec_report = SecurityScanner.scan_file(file_path, subsystem=rec.subsystem)

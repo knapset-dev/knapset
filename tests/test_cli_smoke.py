@@ -23,7 +23,7 @@ class TestCliSmokeV2(unittest.TestCase):
         with redirect_stdout(help_buf):
             main.main(["--help"])
         out = help_buf.getvalue()
-        for cmd in ("inspect", "init", "compare", "rank", "basket", "solve", "run", "preset", "tui", "serve", "mcp"):
+        for cmd in ("inspect", "init", "compare", "rank", "basket", "solve", "run", "preset", "reg", "tui", "serve", "mcp"):
             self.assertIn(cmd, out)
 
     def test_dynamic_cli_prog_in_subparser_help(self) -> None:
@@ -63,6 +63,13 @@ class TestCliSmokeV2(unittest.TestCase):
         with redirect_stdout(preset_buf):
             main.main(["preset", "list", "--json"])
         self.assertIsInstance(json.loads(preset_buf.getvalue()), list)
+
+        reg_buf = io.StringIO()
+        with redirect_stdout(reg_buf):
+            main.main(["reg", "theme", "list", "--json"])
+        themes = json.loads(reg_buf.getvalue())
+        self.assertIsInstance(themes, list)
+        self.assertTrue(any(t["name"] == "agy-dark" for t in themes))
 
 
 if __name__ == "__main__":

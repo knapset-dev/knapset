@@ -26,6 +26,7 @@ from formula_engine import LimitSpec, RuleSpec, SafeExpression, parse_formulas, 
 from preset_loader import PresetConfig, discover_presets, get_user_presets_dir, resolve_preset, save_preset
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.registry import open_source
+from theme_config import ThemeConfig, discover_themes, load_active_theme, set_active_theme
 
 _DATA_EXTENSIONS = {".db", ".sqlite", ".sqlite3", ".csv", ".tsv", ".json", ".jsonl", ".ndjson"}
 
@@ -669,13 +670,19 @@ class TuiSessionState:
 # ---------------------------------------------------------------------------
 
 
-def _format_weight_bar(weight: float, width: int = 10) -> str:
+def _format_weight_bar(
+    weight: float,
+    width: int = 10,
+    fill_ch: str = "█",
+    half_ch: str = "▌",
+    empty_ch: str = "░",
+) -> str:
     """Renders `[0, 1]` weight bar where every 10% (0.10) is 1 full `█` symbol (and 5% is `▌`)."""
     mag = max(0.0, min(1.0, abs(weight)))
     half_steps = max(0, min(width * 2, int(round(mag * width * 2))))
     full = half_steps // 2
     half = half_steps % 2
-    return "█" * full + ("▌" * half) + "░" * (width - full - half)
+    return fill_ch * full + (half_ch * half) + empty_ch * (width - full - half)
 
 
 def _compute_hold_interval(hold_steps: int) -> float:
@@ -697,8 +704,12 @@ class _WorkspaceItem:
     tone: str = "normal"  # "muted" | "pos" | "min" | "accent" | "normal"
 
 
-def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
+def _build_workspace_items(state: TuiSessionState, theme: Optional[ThemeConfig] = None) -> List[_WorkspaceItem]:
     items: List[_WorkspaceItem] = []
+    sym = theme.symbols if theme else {}
+    fill_ch = sym.get("fill", "█")
+    half_ch = sym.get("half", "▌")
+    empty_ch = sym.get("empty", "░")
 
     items.append(_WorkspaceItem(kind="header", label="WEIGHTS 0..1 (←/→ tune · t:↑/↓ · Enter:edit · pink<1/N%)", tone="accent"))
     if state.weights:
@@ -707,7 +718,7 @@ def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
         active_n = sum(1 for m in mags if m > 1e-9)
         eq_threshold = (1.0 / active_n) if active_n > 0 else 1.0
         for idx, ((expr, val), mag) in enumerate(zip(state.weights, mags)):
-            bar = _format_weight_bar(mag, width=10)
+            bar = _format_weight_bar(mag, width=10, fill_ch=fill_ch, half_ch=half_ch, empty_ch=empty_ch)
             is_min = (val < 0) or (state.weight_dirs.get(expr) == "min")
             arrow = "↓ min" if is_min else "↑ max"
             share = (mag / total_w) if total_w > 1e-9 else 0.0
@@ -1325,6 +1336,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
             ("/rule", "Add constraint (Rule / Limit / Filter)"),
             ("/mode", "Switch optimization mode (solve / basket / rank)"),
             ("/explain", "Toggle normalized score breakdown"),
+            ("/theme", "Switch active UI theme (`configs/theme.json`)"),
             ("/export", "Export preset to custom .json path"),
             ("/help", "Show keyboard & mouse controls"),
         ]
@@ -1351,6 +1363,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
         elif cmd == "/explain":
             state.explain = not state.explain
             state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
+        elif cmd == "/theme":
+            _action_pick_theme(stdscr)
         elif cmd == "/export":
             out_p = _modal_text_input(stdscr, "Export Preset JSON", "File path (.json):", initial=f"{state.preset_name}.knapset.json")
             if out_p:
@@ -1424,18 +1438,47 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 curses.mouseinterval(0)
         except Exception:
             pass
+        active_theme = load_active_theme()
+
+        def _apply_curses_theme(theme_cfg: ThemeConfig) -> None:
+            if not curses.has_colors():
+                return
+            support_256 = getattr(curses, "COLORS", 0) >= 256
+            role_pairs = (
+                (C_CYAN, "accent", None),
+                (C_GREEN, "positive", None),
+                (C_MIN, "minimize", None),
+                (C_AMBER, "warning", None),
+                (C_DIM, "muted", None),
+                (C_SEL, "selection_fg", "selection_bg"),
+                (C_BAR, "bar_fg", "bar_bg"),
+            )
+            for pair_id, fg_role, bg_role in role_pairs:
+                fg, bg = theme_cfg.resolve_role_pair(fg_role, bg_role, support_256=support_256)
+                try:
+                    curses.init_pair(pair_id, fg, bg)
+                except Exception:
+                    pass
+
+        def _action_pick_theme(scr: Any) -> None:
+            nonlocal active_theme
+            themes = discover_themes()
+            t_list = list(themes.values())
+            options = [
+                (f"{t.name}{' ★' if t.name == active_theme.name else ''}", f"{t.title} — {t.description}"[:60])
+                for t in t_list
+            ]
+            idx = _modal_picker(scr, "Select Theme (install more via `ks reg install <theme>`)", options)
+            if idx is not None:
+                chosen = t_list[idx]
+                active_theme, _ = set_active_theme(chosen.name)
+                _apply_curses_theme(active_theme)
+                state.status_message = f"Theme: {active_theme.name} ({active_theme.title})"
+
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
-            dark_sel_bg = 236 if getattr(curses, "COLORS", 0) >= 256 else -1
-            dark_bar_bg = 235 if getattr(curses, "COLORS", 0) >= 256 else -1
-            curses.init_pair(C_CYAN, curses.COLOR_CYAN, -1)
-            curses.init_pair(C_GREEN, curses.COLOR_GREEN, -1)
-            curses.init_pair(C_MIN, curses.COLOR_MAGENTA, -1)
-            curses.init_pair(C_AMBER, curses.COLOR_YELLOW, -1)
-            curses.init_pair(C_DIM, curses.COLOR_WHITE, -1)
-            curses.init_pair(C_SEL, curses.COLOR_CYAN, dark_sel_bg)
-            curses.init_pair(C_BAR, curses.COLOR_WHITE, dark_bar_bg)
+            _apply_curses_theme(active_theme)
 
         _run_welcome_if_empty(stdscr)
 
@@ -1589,7 +1632,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 inner_h = pane_h - 2
 
                 _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Workspace Controls", active=not focus_results)
-                ws_items = _build_workspace_items(state)
+                ws_items = _build_workspace_items(state, theme=active_theme)
                 left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
                 if ws_items and ws_items[left_cursor].kind == "header" and left_cursor + 1 < len(ws_items):
                     left_cursor += 1
@@ -1598,6 +1641,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 elif left_cursor >= left_scroll + inner_h:
                     left_scroll = left_cursor - inner_h + 1
 
+                cursor_ch = active_theme.symbols.get("cursor", "▸")
                 for r in range(inner_h):
                     idx = left_scroll + r
                     if idx >= len(ws_items):
@@ -1605,7 +1649,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                         continue
                     it = ws_items[idx]
                     selected = (not focus_results) and (idx == left_cursor)
-                    marker = "▸" if selected else " "
+                    marker = cursor_ch if selected else " "
                     raw_lbl = it.label[1:] if it.label.startswith(" ") else it.label
                     attr = _tone_attr(it.tone, selected=selected)
                     if selected and getattr(curses, "COLORS", 0) >= 256:

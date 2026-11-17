@@ -33,6 +33,7 @@ knapset_market.db
 # Installed runtime domain extensions (keep only the built-in template)
 extensions/*/
 !extensions/template/
+themes/*.json
 
 # Keep directory structure
 !data/.gitkeep

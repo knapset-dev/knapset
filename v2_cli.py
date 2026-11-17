@@ -891,3 +891,228 @@ def run_preset(argv: List[str]) -> None:
             return
         for entry in rep:
             print(f"  {entry.get('name'):<20} [{entry.get('status')}] sha_ok={entry.get('checksum_match')} safe={entry.get('security_safe')}")
+
+
+def run_reg(argv: List[str]) -> None:
+    """Unified `ks reg` CLI for searching, installing, managing registry themes/presets/modules, and selecting themes."""
+    from marketplace.client import TYPE_ALIASES, MarketplaceClient
+    from theme_config import (
+        discover_themes,
+        get_theme_config_path,
+        load_active_theme,
+        reset_active_theme,
+        set_active_theme,
+    )
+
+    prog = get_cli_prog()
+    parser = argparse.ArgumentParser(
+        prog=f"{prog} reg",
+        description="Knapset v2 Registry & Theme Manager (search, info, install, list, remove, verify, theme).",
+    )
+    sub = parser.add_subparsers(dest="subcommand", help="Registry action")
+
+    p_search = sub.add_parser("search", help="Search themes, presets, modules & bundles in knapset-registry")
+    p_search.add_argument("query", nargs="?", default="", help="Search query")
+    p_search.add_argument("--type", "-t", dest="subsystem", default=None, help="Filter by type/subsystem (e.g. theme, preset, extension)")
+    p_search.add_argument("--domain", "-d", default=None, help="Filter by domain")
+    p_search.add_argument("--tag", default=None, help="Filter by tag")
+    p_search.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_search.add_argument("--refresh", action="store_true", help="Refresh registry cache")
+    p_search.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_info = sub.add_parser("info", help="Show details of a registry theme, preset, module, or bundle")
+    p_info.add_argument("name", help="Item name")
+    p_info.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_info.add_argument("--refresh", action="store_true", help="Refresh registry cache")
+    p_info.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_inst = sub.add_parser("install", help="Install a theme, preset, module, or bundle from registry")
+    p_inst.add_argument("target", help="Item name or typed target (e.g. theme:nord, preset:pc_build)")
+    p_inst.add_argument("--use", action="store_true", help="Activate immediately in theme config if target is a theme")
+    p_inst.add_argument("--registry", default=None, help="Custom registry URL or local directory path")
+    p_inst.add_argument("--refresh", action="store_true", help="Refresh registry cache")
+    p_inst.add_argument("--force", "-f", action="store_true", help="Overwrite if already installed")
+
+    p_list = sub.add_parser("list", help="List installed registry items and local themes")
+    p_list.add_argument("--type", "-t", dest="subsystem", default=None, help="Filter by type/subsystem (e.g. theme, preset)")
+    p_list.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_rem = sub.add_parser("remove", aliases=["uninstall"], help="Remove an installed registry item")
+    p_rem.add_argument("name", help="Installed item name")
+    p_rem.add_argument("--force", "-f", action="store_true", help="Force removal")
+
+    p_ver = sub.add_parser("verify", help="Verify installed registry items or local files")
+    p_ver.add_argument("target", nargs="?", default=None, help="Optional item name or path")
+    p_ver.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_theme = sub.add_parser("theme", help="Manage active TUI theme config (`theme.json`)")
+    theme_sub = p_theme.add_subparsers(dest="theme_action", help="Theme action")
+
+    p_tlist = theme_sub.add_parser("list", help="List built-in, installed, and custom themes")
+    p_tlist.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_tuse = theme_sub.add_parser("use", help="Activate a theme in `theme.json`")
+    p_tuse.add_argument("name", help="Theme name or path to theme .json file")
+
+    p_tshow = theme_sub.add_parser("show", help="Show currently active theme and config file path")
+    p_tshow.add_argument("--json", action="store_true", help="Output JSON")
+
+    theme_sub.add_parser("reset", help="Reset `theme.json` back to default `agy-dark`")
+
+    args = parser.parse_args(argv)
+    if not args.subcommand:
+        parser.print_help()
+        return
+
+    if args.subcommand == "theme":
+        action = args.theme_action or "show"
+        if action == "list":
+            active = load_active_theme()
+            themes = discover_themes()
+            if args.json:
+                print(
+                    json.dumps(
+                        [
+                            {
+                                "name": t.name,
+                                "title": t.title,
+                                "author": t.author,
+                                "description": t.description,
+                                "active": t.name == active.name,
+                                "path": str(t.source_path) if t.source_path else "builtin",
+                            }
+                            for t in themes.values()
+                        ],
+                        indent=2,
+                        ensure_ascii=False,
+                    )
+                )
+                return
+            print(f"\nKnapset Themes (active: {active.name} │ config: {get_theme_config_path()})")
+            print("═" * 84)
+            for t in themes.values():
+                mark = "★ active" if t.name == active.name else "        "
+                src = str(t.source_path.name) if t.source_path else "builtin"
+                print(f"  {mark} │ {t.name:<18} │ {t.title:<18} │ {t.description or src}")
+            print()
+            return
+        if action == "use":
+            try:
+                cfg, cfg_path = set_active_theme(args.name)
+            except KeyError as exc:
+                print(f"[FAIL] {exc}", file=sys.stderr)
+                sys.exit(1)
+            except Exception as exc:
+                print(f"[FAIL] Could not load theme '{args.name}': {exc}", file=sys.stderr)
+                sys.exit(1)
+            print(f"[OK] Active theme set to '{cfg.name}' ({cfg.title}) -> {cfg_path}")
+            return
+        if action == "reset":
+            cfg, cfg_path = reset_active_theme()
+            print(f"[OK] Reset active theme to '{cfg.name}' -> {cfg_path}")
+            return
+        # show
+        active = load_active_theme()
+        cfg_path = get_theme_config_path()
+        if getattr(args, "json", False):
+            payload = active.to_dict()
+            payload["config_path"] = str(cfg_path)
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+            return
+        print(f"\nActive Theme : {active.name} ({active.title})")
+        print(f"Config File  : {cfg_path}")
+        print(f"Colors       : {json.dumps(active.colors, ensure_ascii=False)}")
+        print(f"Symbols      : {json.dumps(active.symbols, ensure_ascii=False)}\n")
+        return
+
+    client = MarketplaceClient(registry_url_or_path=getattr(args, "registry", None))
+
+    if args.subcommand == "list":
+        sub_filter = TYPE_ALIASES.get(args.subsystem.lower(), args.subsystem.lower()) if args.subsystem else None
+        records = client.list_installed()
+        if sub_filter:
+            records = [r for r in records if str(r.get("subsystem", "")).lower() == sub_filter]
+        if args.json:
+            print(json.dumps(records, indent=2, ensure_ascii=False, default=str))
+            return
+        active_theme = load_active_theme().name
+        print(f"\nInstalled Registry Items ({len(records)})")
+        print("═" * 84)
+        if not records:
+            print(f"  (No registry items installed yet. Search via `{prog} reg search`.)\n")
+            return
+        for rec in records:
+            extra_tag = " ★ active" if rec.get("subsystem") == "themes" and rec.get("name") == active_theme else ""
+            print(f"  {rec.get('name', ''):<20} │ [{rec.get('subsystem', ''):<10}] v{rec.get('version', '1.0.0'):<8} │ {rec.get('path', '')}{extra_tag}")
+        print()
+        return
+
+    if args.subcommand == "search":
+        sub_filter = TYPE_ALIASES.get(args.subsystem.lower(), args.subsystem.lower()) if args.subsystem else None
+        res = client.search(
+            query=args.query,
+            domain=args.domain,
+            subsystem=sub_filter,
+            tag=args.tag,
+            force_refresh=args.refresh,
+        )
+        if args.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+            return
+        mods = res.get("modules", [])
+        bundles = res.get("bundles", []) if not sub_filter else []
+        print(f"\nRegistry Search Results ({len(mods)} item(s), {len(bundles)} bundle(s))")
+        print("═" * 84)
+        for m in mods:
+            inst = f" [installed v{m.get('installed_version')}]" if m.get("is_installed") else ""
+            print(f"  {m.get('name', ''):<20} [{m.get('subsystem', ''):<10}] v{m.get('version', ''):<6}{inst} — {m.get('description', '')}")
+        for b in bundles:
+            print(f"  bundle:{b.get('name', ''):<13} [bundle    ] — {b.get('description', '')}")
+        print()
+        return
+
+    if args.subcommand == "info":
+        res = client.info(args.name, force_refresh=args.refresh)
+        if not res:
+            print(f"[FAIL] Item '{args.name}' not found in registry.", file=sys.stderr)
+            sys.exit(1)
+        if args.json:
+            print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+            return
+        print(json.dumps(res, indent=2, ensure_ascii=False, default=str))
+        return
+
+    if args.subcommand == "install":
+        ok, msg = client.install(
+            args.target,
+            force=args.force,
+            force_refresh=True if args.refresh else None,
+        )
+        if not ok:
+            print(f"[FAIL] {msg}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[OK] {msg}")
+        if args.use:
+            clean_name = args.target.strip().lower().split(":", 1)[-1]
+            installed_map = {r["name"]: r for r in client.list_installed()}
+            rec = installed_map.get(clean_name)
+            if rec and rec.get("subsystem") in ("theme", "themes"):
+                cfg, cfg_path = set_active_theme(clean_name)
+                print(f"[OK] Activated theme '{cfg.name}' ({cfg.title}) -> {cfg_path}")
+        return
+
+    if args.subcommand in ("remove", "uninstall"):
+        ok, msg = client.remove(args.name, force=args.force)
+        if not ok:
+            print(f"[FAIL] {msg}", file=sys.stderr)
+            sys.exit(1)
+        print(f"[OK] {msg}")
+        return
+
+    if args.subcommand == "verify":
+        rep = client.verify(args.target)
+        if args.json:
+            print(json.dumps(rep, indent=2, ensure_ascii=False, default=str))
+            return
+        for entry in rep:
+            print(f"  {entry.get('name'):<20} [{entry.get('status')}] sha_ok={entry.get('checksum_match')} safe={entry.get('security_safe')}")

@@ -39,6 +39,7 @@ SUBCOMMANDS: Dict[str, str] = {
     "solve": "Synthesize multi-slot combinations across tables/files with weights, limits, and AST rules",
     "run": "Execute a saved Knapset v2 preset (.json/.toml or installed name) with CLI overrides",
     "preset": "Manage local and registry presets (list, search, info, install, remove, verify)",
+    "reg": "Manage registry items & themes (search, info, install, list, remove, verify, theme)",
     "tui": "Launch interactive Terminal UI (curses) for live +/- weights, formulas, limits, and rules",
     "serve": "Start zero-dependency Web Studio & REST API server (alias: web)",
     "mcp": "Start built-in Model Context Protocol (MCP) JSON-RPC 2.0 server over stdio",
@@ -101,6 +102,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif cmd == "preset":
         from v2_cli import run_preset
         run_preset(extra)
+    elif cmd in ("reg", "registry"):
+        from v2_cli import run_reg
+        run_reg(extra)
     elif cmd == "tui":
         from tui import run_tui
         run_tui(extra)
