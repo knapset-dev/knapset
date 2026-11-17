@@ -467,6 +467,20 @@ class TuiSessionState:
         arrow = "↓ min" if self.weight_dirs[clean] == "min" else "↑ max"
         self.status_message = f"Weight set: {clean} = {mag:.2f} ({arrow})"
 
+    def update_weight_expression(self, idx: int, new_expr: str) -> None:
+        """Renames/updates an existing weight's expression (e.g. `price` -> `price / gpu.vram_gb`), preserving strength & direction."""
+        if idx < 0 or idx >= len(self.weights):
+            return
+        clean = new_expr.strip()
+        SafeExpression(clean)
+        old_expr, val = self.weights[idx]
+        old_dir = self.weight_dirs.get(old_expr, "min" if val < 0 else "max")
+        self.weight_dirs[clean] = old_dir
+        self.weights[idx] = (clean, round(min(1.0, abs(val)), 2))
+        self.dirty = True
+        self.re_solve()
+        self.status_message = f"Updated weight: '{old_expr}' -> '{clean}'"
+
     def remove_weight(self, idx: int) -> None:
         if 0 <= idx < len(self.weights):
             removed = self.weights.pop(idx)
@@ -654,7 +668,7 @@ class _WorkspaceItem:
 def _build_workspace_items(state: TuiSessionState) -> List[_WorkspaceItem]:
     items: List[_WorkspaceItem] = []
 
-    items.append(_WorkspaceItem(kind="header", label="WEIGHTS 0..1 (←/→ tune · t:↑/↓ dir · pink < 1/N%)", tone="accent"))
+    items.append(_WorkspaceItem(kind="header", label="WEIGHTS 0..1 (←/→ tune · t:↑/↓ · Enter:edit · pink<1/N%)", tone="accent"))
     if state.weights:
         mags = [min(1.0, abs(w)) for _, w in state.weights]
         total_w = sum(mags)
@@ -1151,13 +1165,26 @@ def run_curses_tui(state: TuiSessionState) -> None:
         except Exception as exc:
             state.status_message = f"Save failed: {exc}"
 
+    def _expr_suggestions() -> List[str]:
+        merged: List[str] = []
+        seen = set()
+        for expr, _ in state.weights:
+            if expr not in seen and all(ch.isalnum() or ch in ("_", ".") for ch in expr):
+                seen.add(expr)
+                merged.append(expr)
+        for col in state.available_columns:
+            if col not in seen:
+                seen.add(col)
+                merged.append(col)
+        return merged
+
     def _action_add_weight(stdscr: Any) -> None:
         expr = _modal_text_input(
             stdscr,
             "Add Preference Weight",
             "Field or expression to score (←/→ selects field below, Tab inserts it):",
-            suggestions=state.available_columns,
-            examples=["gpu.ref.score", "cpu.score / gpu.ref.score"],
+            suggestions=_expr_suggestions(),
+            examples=["price / gpu.vram_gb", "gpu.ref.score", "cpu.score / gpu.ref.score"],
             validator=SafeExpression,
         )
         if not expr:
@@ -1175,6 +1202,25 @@ def run_curses_tui(state: TuiSessionState) -> None:
         except Exception as exc:
             state.status_message = f"Invalid weight: {exc}"
 
+    def _action_edit_weight(stdscr: Any, idx: int) -> None:
+        if idx < 0 or idx >= len(state.weights):
+            return
+        old_expr, _ = state.weights[idx]
+        new_expr = _modal_text_input(
+            stdscr,
+            "Edit Weight Expression",
+            "Edit expression (e.g. turn 'price' into 'price / gpu.vram_gb' · Tab inserts field):",
+            initial=old_expr,
+            suggestions=_expr_suggestions(),
+            examples=[f"{old_expr} / gpu.vram_gb", "gpu.price / gpu.vram_gb"],
+            validator=SafeExpression,
+        )
+        if new_expr and new_expr != old_expr:
+            try:
+                state.update_weight_expression(idx, new_expr)
+            except Exception as exc:
+                state.status_message = f"Invalid expression: {exc}"
+
     def _action_add_constraint(stdscr: Any) -> None:
         kinds = [
             ("Formula  (derived computed column)", "e.g. deal_pct = (ref.msrp - price) / ref.msrp * 100"),
@@ -1191,8 +1237,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     stdscr,
                     "Create Formula",
                     "Write 'new_name = expression' (Tab inserts highlighted DB field):",
-                    suggestions=state.available_columns,
-                    examples=["val = ref.score / price", "discount = (ref.msrp - price) / ref.msrp * 100"],
+                    suggestions=_expr_suggestions(),
+                    examples=["val = price / gpu.vram_gb", "discount = (ref.msrp - price) / ref.msrp * 100"],
                     validator=lambda s: parse_formulas([s]),
                 )
                 if val:
@@ -1202,7 +1248,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     stdscr,
                     "Add Compatibility Rule",
                     "Write boolean rule expression (Tab inserts highlighted DB field):",
-                    suggestions=state.available_columns,
+                    suggestions=_expr_suggestions(),
                     examples=["cpu.socket == mobo.socket", "cpu.ref.score / gpu.ref.score < 1"],
                     validator=RuleSpec.parse,
                 )
@@ -1213,7 +1259,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     stdscr,
                     "Add Resource Limit",
                     "Write aggregate limit (Tab inserts highlighted DB field):",
-                    suggestions=state.available_columns,
+                    suggestions=_expr_suggestions(),
                     examples=["sum(price) <= 950", "count <= 4"],
                     validator=LimitSpec.parse,
                 )
@@ -1224,7 +1270,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     stdscr,
                     "Add Row Filter (--where)",
                     "Write filter predicate (Tab inserts highlighted DB field):",
-                    suggestions=state.available_columns,
+                    suggestions=_expr_suggestions(),
                     examples=["price <= 600"],
                     validator=SafeExpression,
                 )
@@ -1554,7 +1600,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 elif cur.kind == "ref":
                     _action_attach_ref(stdscr, forced_ref_key=cur.key)
                 elif cur.kind == "weight":
-                    state.adjust_weight(cur.index, 0.1)
+                    _action_edit_weight(stdscr, cur.index)
 
     curses.wrapper(_loop)
 

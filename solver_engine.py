@@ -456,7 +456,16 @@ def _filter_slot_rows(
     Applies row formulas and filters relevant to `slot_name`.
     Supports both slot-prefixed clauses (`cpu.cores >= 6`) and unqualified clauses matching row keys.
     """
-    processed = apply_row_formulas(list(rows), formulas)
+    processed: List[Dict[str, Any]] = []
+    for raw_row in rows:
+        item = dict(raw_row)
+        for f in formulas:
+            val = f.compiled.evaluate({**item, slot_name: item})
+            if isinstance(val, float) and math.isfinite(val):
+                item[f.name] = round(val, 6)
+            else:
+                item[f.name] = val
+        processed.append(item)
     if not where_clauses:
         return processed
 

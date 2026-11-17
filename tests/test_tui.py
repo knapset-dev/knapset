@@ -110,6 +110,12 @@ class TestTuiSessionState(unittest.TestCase):
             self.assertNotEqual(state.weight_dirs.get(state.weights[0][0]), prev_dir)
             state.toggle_weight_direction(0)
 
+            # Edit existing weight expression in place (e.g. price -> price / gpu.ref.msrp) + slot-prefixed formula
+            state.update_weight_expression(0, f"{state.weights[0][0]} / gpu.ref.msrp")
+            self.assertIn("gpu.ref.msrp", state.weights[0][0])
+            state.add_formula("gpu_eff = gpu.ref.score / gpu.price")
+            self.assertGreaterEqual(len(state.results), 1)
+
             ws_items = _build_workspace_items(state)
             self.assertTrue(any(it.action_id == "add_weight" for it in ws_items))
             self.assertTrue(any(it.action_id == "add_constraint" for it in ws_items))
