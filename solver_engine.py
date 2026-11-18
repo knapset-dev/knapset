@@ -10,12 +10,13 @@ Implements the three core optimization modes:
 
 from __future__ import annotations
 
+import ast
 import heapq
 import itertools
 import math
 import re
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 from formula_engine import (
     FormulaSpec,
@@ -23,10 +24,12 @@ from formula_engine import (
     RuleSpec,
     SafeExpression,
     WeightTerm,
+    _extract_attr_chain,
     apply_row_formulas,
     filter_rows,
     parse_formulas,
     parse_weights,
+    resolve_field_path,
     to_number,
 )
 
@@ -496,15 +499,49 @@ def _strip_agg_if_needed(term: WeightTerm) -> Tuple[Optional[str], WeightTerm]:
     return None, term
 
 
+def _extract_slot_eq_fields(
+    parsed_rules: Sequence[RuleSpec],
+    slot_names: Sequence[str],
+) -> Dict[str, Tuple[Tuple[str, ...], ...]]:
+    """Extracts per-slot field chains referenced in cross-slot `==` compatibility rules."""
+    slot_set = set(slot_names)
+    found: Dict[str, List[Tuple[str, ...]]] = {s: [] for s in slot_names}
+
+    for rule in parsed_rules:
+        for node in ast.walk(rule.compiled.tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            operands = [node.left, *node.comparators]
+            for left_n, op, right_n in zip(operands, node.ops, operands[1:]):
+                if not isinstance(op, ast.Eq):
+                    continue
+                if not isinstance(left_n, ast.Attribute) or not isinstance(right_n, ast.Attribute):
+                    continue
+                l_chain = _extract_attr_chain(left_n)
+                r_chain = _extract_attr_chain(right_n)
+                l_slot, r_slot = l_chain[0], r_chain[0]
+                if l_slot in slot_set and r_slot in slot_set and l_slot != r_slot:
+                    l_path = tuple(l_chain[1:])
+                    r_path = tuple(r_chain[1:])
+                    if l_path and l_path not in found[l_slot]:
+                        found[l_slot].append(l_path)
+                    if r_path and r_path not in found[r_slot]:
+                        found[r_slot].append(r_path)
+
+    return {s: tuple(paths) for s, paths in found.items()}
+
+
 def _prune_slot_candidates(
     slot_name: str,
     rows: List[Dict[str, Any]],
     slot_scores: List[float],
     limit_exprs: Sequence[SafeExpression],
     pareto_limit: int,
+    group_paths: Sequence[Tuple[str, ...]] = (),
 ) -> List[Tuple[Dict[str, Any], float]]:
     """
     Prunes large slot candidate lists while preserving:
+    - Representation across cross-slot `==` compatibility groups (e.g. socket/DDR buckets)
     - Top utility candidates
     - Lowest resource-cost candidates (so tight budgets don't starve)
     """
@@ -513,18 +550,79 @@ def _prune_slot_candidates(
         paired.sort(key=lambda x: -x[1])
         return paired
 
+    def _cost_val(row: Dict[str, Any]) -> float:
+        if not limit_exprs:
+            return 0.0
+        val = to_number(limit_exprs[0].evaluate(row))
+        return val if val is not None else float("inf")
+
+    if group_paths:
+        buckets: Dict[Tuple[Any, ...], List[Tuple[int, Tuple[Dict[str, Any], float]]]] = {}
+        for orig_idx, pair in enumerate(paired):
+            key = tuple(resolve_field_path(pair[0], path) for path in group_paths)
+            buckets.setdefault(key, []).append((orig_idx, pair))
+
+        if len(buckets) > 1:
+            eff_limit = min(len(paired), max(pareto_limit, min(96, len(buckets) * 6)))
+            keep_by_sig: Dict[int, Tuple[Dict[str, Any], float]] = {}
+
+            bucket_util_iters = []
+            bucket_cost_iters = []
+            for key in sorted(buckets.keys(), key=lambda k: tuple("" if v is None else str(v) for v in k)):
+                entries = buckets[key]
+                bucket_util_iters.append(iter(sorted(entries, key=lambda p: (-p[1][1], p[0]))))
+                if limit_exprs:
+                    bucket_cost_iters.append(iter(sorted(entries, key=lambda p: (_cost_val(p[1][0]), -p[1][1], p[0]))))
+
+            util_cap = eff_limit if not limit_exprs else max(1, int(eff_limit * 0.75))
+            active_iters = list(bucket_util_iters)
+            while active_iters and len(keep_by_sig) < util_cap:
+                next_iters = []
+                for it in active_iters:
+                    added = False
+                    for orig_idx, pair in it:
+                        if orig_idx not in keep_by_sig:
+                            keep_by_sig[orig_idx] = pair
+                            added = True
+                            break
+                    if added and len(keep_by_sig) < util_cap:
+                        next_iters.append(it)
+                    if len(keep_by_sig) >= util_cap:
+                        break
+                active_iters = next_iters
+
+            if limit_exprs and len(keep_by_sig) < eff_limit:
+                active_costs = list(bucket_cost_iters)
+                while active_costs and len(keep_by_sig) < eff_limit:
+                    next_costs = []
+                    for it in active_costs:
+                        added = False
+                        for orig_idx, pair in it:
+                            if orig_idx not in keep_by_sig:
+                                keep_by_sig[orig_idx] = pair
+                                added = True
+                                break
+                        if added and len(keep_by_sig) < eff_limit:
+                            next_costs.append(it)
+                        if len(keep_by_sig) >= eff_limit:
+                            break
+                    active_costs = next_costs
+
+            result = list(keep_by_sig.values())
+            result.sort(key=lambda p: -p[1])
+            return result
+
     # Keep top ~75% by utility and up to ~25% by minimum resource cost
-    keep_by_sig: Dict[int, Tuple[Dict[str, Any], float]] = {}
+    keep_by_sig = {}
     by_util = sorted(enumerate(paired), key=lambda p: (-p[1][1], p[0]))
     top_k = max(1, int(pareto_limit * 0.75))
     for orig_idx, pair in by_util[:top_k]:
         keep_by_sig[orig_idx] = pair
 
     if limit_exprs:
-        primary_lim = limit_exprs[0]
         by_cost = sorted(
             enumerate(paired),
-            key=lambda p: (to_number(primary_lim.evaluate(p[1][0])) or float("inf"), -p[1][1], p[0]),
+            key=lambda p: (_cost_val(p[1][0]), -p[1][1], p[0]),
         )
         for orig_idx, pair in by_cost:
             if len(keep_by_sig) >= pareto_limit:
@@ -670,11 +768,51 @@ def solve_sets(
         return util_sum, parts
 
     # Score & optionally Pareto-prune each slot
+    # Pre-filter candidates that cannot satisfy any monotone upper limit even with minimum costs in all other slots
     upper_cost_exprs = [
         lim.inner_compiled
         for lim in parsed_limits
         if lim.is_upper_monotone() and lim.inner_compiled is not None
     ]
+    for lim in parsed_limits:
+        if lim.agg == "sum" and lim.op in ("<=", "<") and lim.inner_compiled is not None:
+            if not any(r in slot_pools for r in lim.inner_compiled.roots_referenced):
+                slot_costs: Dict[str, List[float]] = {}
+                slot_mins: Dict[str, float] = {}
+                all_nonneg = True
+                for sname in slot_names:
+                    cvals: List[float] = []
+                    for r in filtered_pools[sname]:
+                        cv = to_number(lim.inner_compiled.evaluate(r))
+                        if cv is None or cv < 0:
+                            all_nonneg = False
+                            break
+                        cvals.append(cv)
+                    if not all_nonneg or not cvals:
+                        all_nonneg = False
+                        break
+                    slot_costs[sname] = cvals
+                    slot_mins[sname] = min(cvals)
+                if all_nonneg:
+                    total_min = sum(slot_mins.values())
+                    allowed = lim.rhs if lim.op == "<=" else (lim.rhs - 1e-9)
+                    for sname in slot_names:
+                        other_min = total_min - slot_mins[sname]
+                        kept_rows = [
+                            r for r, cv in zip(filtered_pools[sname], slot_costs[sname])
+                            if cv + other_min <= allowed + 1e-9
+                        ]
+                        if len(kept_rows) != len(filtered_pools[sname]):
+                            filtered_pools[sname] = kept_rows
+                    if any(len(filtered_pools[s]) == 0 for s in slot_names):
+                        return [], {
+                            "mode": "solve",
+                            "slot_counts": {s: len(filtered_pools[s]) for s in slot_names},
+                            "nodes_explored": 0,
+                            "feasible_count": 0,
+                        }
+
+    slot_eq_fields = _extract_slot_eq_fields(parsed_rules, slot_names)
     pruned_slots: Dict[str, List[Tuple[Dict[str, Any], float]]] = {}
     for sname in slot_names:
         raw_scores = [_slot_additive_score(sname, r)[0] for r in filtered_pools[sname]]
@@ -684,6 +822,7 @@ def solve_sets(
             raw_scores,
             limit_exprs=upper_cost_exprs,
             pareto_limit=pareto_limit,
+            group_paths=slot_eq_fields.get(sname, ()),
         )
 
     # Order slots so tightly constrained slots appear early for fast partial rule pruning

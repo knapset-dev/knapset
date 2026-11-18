@@ -341,6 +341,45 @@ class TestV2Phase2CLI(unittest.TestCase):
             self.assertEqual(top_sol["slots"]["gpu"]["title"], "MSI RTX 3080")
             self.assertTrue(solve_json_export.is_file())
 
+    def test_solve_sets_preserves_compatibility_groups_under_large_pool_pruning(self) -> None:
+        # 80 ultra-cheap LGA1150 boards should not crowd out AM4 boards under pareto pruning
+        cpus = [
+            {"name": "Celeron G1840", "socket": "LGA1150", "score": 30, "price": 10},
+            {"name": "Ryzen 7 5800X3D", "socket": "AM4", "score": 95, "price": 200},
+        ]
+        mobos = [{"name": f"Old H81 #{i}", "socket": "LGA1150", "price": 15 + i * 0.1} for i in range(80)]
+        mobos.append({"name": "B550 Tomahawk", "socket": "AM4", "price": 110})
+
+        sols, _ = solve_sets(
+            slot_pools={"cpu": cpus, "mobo": mobos},
+            weights="cpu.score:+0.8, price:-0.2",
+            limits=["sum(price) <= 350"],
+            rules=["cpu.socket == mobo.socket"],
+            top_n=3,
+        )
+        self.assertGreaterEqual(len(sols), 1)
+        self.assertEqual(sols[0].slots["cpu"]["name"], "Ryzen 7 5800X3D")
+        self.assertEqual(sols[0].slots["mobo"]["name"], "B550 Tomahawk")
+
+    def test_solve_sets_prunes_unaffordable_candidates_before_pareto_cap(self) -> None:
+        # 50 over-budget GPUs should not crowd out mid-range GPUs that fit the budget
+        gpus = [{"name": f"Ultra GPU #{i}", "fps": 200 + i, "price": 1500 + i} for i in range(50)]
+        gpus.extend(
+            [
+                {"name": "Mid GPU", "fps": 120, "price": 400},
+                {"name": "Low GPU", "fps": 40, "price": 50},
+            ]
+        )
+        cpus = [{"name": "Main CPU", "fps": 100, "price": 150}]
+        sols, _ = solve_sets(
+            slot_pools={"gpu": gpus, "cpu": cpus},
+            weights="gpu.fps:+0.8, price:-0.2",
+            limits=["sum(price) <= 600"],
+            top_n=2,
+        )
+        self.assertGreaterEqual(len(sols), 1)
+        self.assertEqual(sols[0].slots["gpu"]["name"], "Mid GPU")
+
 
 if __name__ == "__main__":
     unittest.main()
