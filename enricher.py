@@ -16,13 +16,15 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from sources.registry import open_source
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_HOMOGLYPH_TRANS = str.maketrans("аеікморстх", "aeikmopctx")
 
 
 def normalize_match_text(value: Any) -> str:
-    """Lowercases and collapses punctuation into single spaces for token matching."""
+    """Lowercases, folds Cyrillic-Latin lookalikes, and collapses punctuation for matching."""
     if value is None:
         return ""
-    return _NON_ALNUM_RE.sub(" ", str(value).lower()).strip()
+    folded = str(value).lower().translate(_HOMOGLYPH_TRANS)
+    return _NON_ALNUM_RE.sub(" ", folded).strip()
 
 
 def parse_match_expr(expr: str) -> Tuple[str, str, Optional[str]]:

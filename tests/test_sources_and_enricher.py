@@ -248,6 +248,22 @@ class TestEnricher(unittest.TestCase):
             self.assertEqual(res.matched, 1)
             self.assertEqual(res.rows[0]["ref"]["score"], 27500)
 
+    def test_token_match_folds_cyrillic_homoglyphs(self) -> None:
+        res = enrich_rows(
+            [
+                {"title": "Процесор Intel Core і7-8700K 4.7GHz"},
+                {"title": "Відеокарта Gigabyte RTХ 4070 Ti 12GB"},
+            ],
+            [
+                {"model": "i7-8700K", "score": 15900},
+                {"model": "RTX 4070 Ti", "score": 31800},
+            ],
+            MatchSpec(left_field="title", right_field="model", strategy="token", on_unmatched="drop"),
+        )
+        self.assertEqual(res.matched, 2)
+        self.assertEqual(res.rows[0]["ref"]["model"], "i7-8700K")
+        self.assertEqual(res.rows[1]["ref"]["model"], "RTX 4070 Ti")
+
 
 class TestV2Phase1CLI(unittest.TestCase):
     def _run_cli(self, argv: List[str]) -> str:
