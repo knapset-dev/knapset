@@ -36,6 +36,9 @@ class TestV2WebAndMCP(unittest.TestCase):
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5.0) as r:
                 html = r.read().decode("utf-8")
                 self.assertIn("Knapset v2 Studio", html)
+                self.assertIn("no-store", r.headers.get("Cache-Control", ""))
+                self.assertNotIn("min_val", html)
+                self.assertIn("c.min", html)
 
             health = _http_json(f"http://127.0.0.1:{port}/api/health")
             self.assertEqual(health, {"status": "ok", "version": "2.1.0"})

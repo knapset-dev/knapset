@@ -594,8 +594,8 @@ async function inspectSourcePath() {
   }
   const html = (data.schema.tables || []).map(t => {
     const colsHtml = (t.columns || []).map(c => {
-      const rng = (c.min_val !== null && c.min_val !== undefined && c.max_val !== null && c.max_val !== undefined)
-        ? ` [${c.min_val}..${c.max_val}]` : '';
+      const rng = (c.min !== null && c.min !== undefined && c.max !== null && c.max !== undefined)
+        ? ` [${c.min}..${c.max}]` : '';
       return `${esc(c.name)}<i>(${esc(c.kind)}${esc(rng)})</i>`;
     }).join(', ');
     return `<div style="margin-bottom:4px"><b>${esc(t.name)}</b> (${t.row_count} rows): ${colsHtml}</div>`;
@@ -741,8 +741,15 @@ document.getElementById('resultsPanel').addEventListener('click', ev => {
 });
 
 function triggerDownload(filename, content, mimeType) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
+  let url = '';
+  let isBlob = false;
+  try {
+    const blob = new Blob([content], { type: mimeType });
+    url = URL.createObjectURL(blob);
+    isBlob = true;
+  } catch (_) {
+    url = `data:${mimeType};charset=utf-8,${encodeURIComponent(content)}`;
+  }
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -750,9 +757,9 @@ function triggerDownload(filename, content, mimeType) {
   document.body.appendChild(a);
   a.click();
   setTimeout(() => {
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-  }, 150);
+    a.remove();
+    if (isBlob) URL.revokeObjectURL(url);
+  }, 2500);
 }
 
 function flattenPayloadRows(payload) {
@@ -782,9 +789,11 @@ function flattenPayloadRows(payload) {
 }
 
 function downloadJson() {
-  if (!lastPayload) { setStatus('Run Optimize or Load a preset first before exporting JSON.', 'var(--warn)'); return; }
-  triggerDownload('knapset_results.json', JSON.stringify(lastPayload, null, 2), 'application/json');
-  setStatus('Exported knapset_results.json.', 'var(--green)');
+  const target = lastPayload || (inspectedSchema ? { schema: inspectedSchema } : null);
+  if (!target) { setStatus('Run Optimize, Load a preset, or Inspect a source first before exporting JSON.', 'var(--warn)'); return; }
+  const fname = lastPayload ? 'knapset_results.json' : 'knapset_schema.json';
+  triggerDownload(fname, JSON.stringify(target, null, 2), 'application/json');
+  setStatus(`Exported ${fname}.`, 'var(--green)');
 }
 function downloadCsv() {
   if (!lastPayload || !(lastPayload.results || []).length) {
@@ -846,7 +855,20 @@ async function installRegItem(target, itemType) {
 }
 async function installStarterBundle() {
   await installRegItem('bundle:starter-presets', 'bundle');
+  const sel = document.getElementById('presetSelect');
+  if (!sel.value && sel.options.length > 1) {
+    sel.value = presetMap['pc_build'] ? 'pc_build' : sel.options[1].value;
+    onPresetChange();
+    await loadSelectedPreset();
+  }
 }
+
+window.addEventListener('error', ev => {
+  setStatus(`Web UI error: ${ev.message || 'Unknown script error'}`, 'var(--red)');
+});
+window.addEventListener('unhandledrejection', ev => {
+  setStatus(`Web UI async error: ${(ev.reason && ev.reason.message) || ev.reason || 'Request failed'}`, 'var(--red)');
+});
 
 document.addEventListener('keydown', e => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
