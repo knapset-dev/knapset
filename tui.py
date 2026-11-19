@@ -990,7 +990,26 @@ class _WorkspaceItem:
     tone: str = "normal"  # "muted" | "pos" | "min" | "accent" | "normal"
 
 
-def _build_workspace_items(state: TuiSessionState, theme: Optional[ThemeConfig] = None) -> List[_WorkspaceItem]:
+def _format_weight_expr(expr: str, name_w: int) -> str:
+    """Fits a dotted weight expression into `name_w` chars without hiding `.ref.<metric>` suffixes."""
+    if len(expr) <= name_w:
+        return expr
+    short = expr.replace(".ref.", ".r.")
+    if len(short) <= name_w:
+        return short
+    if "." in short:
+        head, tail = short.rsplit(".", 1)
+        avail = name_w - len(head) - 1
+        if avail >= 6:
+            return f"{head}.{tail[:avail]}"
+    return short[:name_w]
+
+
+def _build_workspace_items(
+    state: TuiSessionState,
+    theme: Optional[ThemeConfig] = None,
+    weight_name_w: int = 18,
+) -> List[_WorkspaceItem]:
     items: List[_WorkspaceItem] = []
     sym = theme.symbols if theme else {}
     fill_ch = sym.get("fill", "█")
@@ -1016,11 +1035,12 @@ def _build_workspace_items(state: TuiSessionState, theme: Optional[ThemeConfig] 
                 tone = "min"  # pink highlight when normalized share is below 1/N% of total weight
             else:
                 tone = "pos"
+            lbl_expr = _format_weight_expr(expr, weight_name_w)
             items.append(
                 _WorkspaceItem(
                     kind="weight",
                     index=idx,
-                    label=f" {expr[:12]:<12} [-][{bar}][+] {mag:.2f} {pct:>2}% {arrow}",
+                    label=f" {lbl_expr:<{weight_name_w}} [-][{bar}][+] {mag:.2f} {pct:>2}% {arrow}",
                     tone=tone,
                 )
             )
@@ -1945,7 +1965,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 if force_clear:
                     stdscr.erase()
                     force_clear = False
-                left_w = max(54 if w >= 88 else 38, min(64, int(w * 0.48)))
+                left_w = max(56 if w >= 88 else 38, min(64, int(w * 0.48)))
+                weight_name_w = 18 if left_w >= 56 else 12
+                slider_x = 3 + weight_name_w
                 right_x = left_w + 1
                 right_w = max(24, w - right_x)
 
@@ -1967,7 +1989,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 inner_h = pane_h - 2
 
                 _draw_box(stdscr, pane_y, 0, pane_h, left_w, title="Workspace Controls", active=not focus_results)
-                ws_items = _build_workspace_items(state, theme=active_theme)
+                ws_items = _build_workspace_items(state, theme=active_theme, weight_name_w=weight_name_w)
                 left_cursor = max(0, min(left_cursor, max(0, len(ws_items) - 1)))
                 if ws_items and ws_items[left_cursor].kind == "header" and left_cursor + 1 < len(ws_items):
                     left_cursor += 1
@@ -2115,26 +2137,26 @@ def run_curses_tui(state: TuiSessionState) -> None:
                             left_cursor = clicked_idx
                             it = ws_items[left_cursor]
                             if it.kind == "weight":
-                                if 15 <= mx <= 18:
+                                if slider_x <= mx <= slider_x + 3:
                                     _nudge_weight(it.index, -1, allow_accel=False)
                                     if btn1_press and (bstate & btn1_press):
                                         now_p = time.monotonic()
                                         mouse_hold = [it.index, -1, now_p, now_p, 0]
-                                elif 19 <= mx <= 30:
+                                elif slider_x + 4 <= mx <= slider_x + 15:
                                     # Click directly along 10-symbol [██████████] bar in 5% steps (0.00 .. 1.00)
-                                    frac = max(0.0, min(1.0, (mx - 19) / 10.0))
+                                    frac = max(0.0, min(1.0, (mx - (slider_x + 4)) / 10.0))
                                     val_click = round(round(frac * 20) / 20.0, 2)
                                     w_expr, _ = state.weights[it.index]
                                     state.weights[it.index] = (w_expr, val_click)
                                     state.dirty = True
                                     state.status_message = f"{w_expr}: {val_click:.2f}"
                                     _schedule_solve()
-                                elif 31 <= mx <= 34:
+                                elif slider_x + 16 <= mx <= slider_x + 19:
                                     _nudge_weight(it.index, 1, allow_accel=False)
                                     if btn1_press and (bstate & btn1_press):
                                         now_p = time.monotonic()
                                         mouse_hold = [it.index, 1, now_p, now_p, 0]
-                                elif mx >= 43:
+                                elif mx >= slider_x + 28:
                                     state.toggle_weight_direction(it.index, auto_solve=False)
                                     _schedule_solve()
                             elif it.kind in ("action", "profile", "slot", "ref"):
