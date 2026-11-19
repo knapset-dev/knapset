@@ -43,7 +43,7 @@ from theme_config import (
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {
     "name": "knapset-mcp",
-    "version": "2.0.0",
+    "version": "2.1.0",
 }
 
 _REF_ITEM_SCHEMA: Dict[str, Any] = {

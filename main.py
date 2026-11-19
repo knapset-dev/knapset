@@ -29,7 +29,7 @@ if str(ROOT_DIR) not in sys.path:
 
 from app_paths import get_cli_prog as _cli_prog  # noqa: E402
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 SUBCOMMANDS: Dict[str, str] = {
     "inspect": "Inspect tables, columns, inferred types, and value ranges in a DB/CSV/JSON source",

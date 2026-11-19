@@ -17,7 +17,7 @@ class TestCliSmokeV2(unittest.TestCase):
         buf = io.StringIO()
         with redirect_stdout(buf):
             main.main(["--version"])
-        self.assertIn("2.0.0", buf.getvalue())
+        self.assertIn("2.1.0", buf.getvalue())
 
         help_buf = io.StringIO()
         with redirect_stdout(help_buf):
@@ -46,7 +46,7 @@ class TestCliSmokeV2(unittest.TestCase):
         with redirect_stdout(mcp_buf):
             main.main(["mcp", "--list-tools"])
         payload = json.loads(mcp_buf.getvalue())
-        self.assertEqual(payload["server"]["version"], "2.0.0")
+        self.assertEqual(payload["server"]["version"], "2.1.0")
         names = [t["name"] for t in payload["tools"]]
         self.assertEqual(
             names,

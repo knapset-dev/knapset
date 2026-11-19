@@ -38,7 +38,7 @@ class TestV2WebAndMCP(unittest.TestCase):
                 self.assertIn("Knapset v2 Studio", html)
 
             health = _http_json(f"http://127.0.0.1:{port}/api/health")
-            self.assertEqual(health, {"status": "ok", "version": "2.0.0"})
+            self.assertEqual(health, {"status": "ok", "version": "2.1.0"})
 
             with tempfile.TemporaryDirectory() as tmp:
                 tmp_root = Path(tmp)
@@ -143,7 +143,7 @@ class TestV2WebAndMCP(unittest.TestCase):
         init_resp = handle_jsonrpc_message({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertIsNotNone(init_resp)
         assert init_resp is not None
-        self.assertEqual(init_resp["result"]["serverInfo"]["version"], "2.0.0")
+        self.assertEqual(init_resp["result"]["serverInfo"]["version"], "2.1.0")
 
         self.assertIsNone(handle_jsonrpc_message({"jsonrpc": "2.0", "method": "notifications/initialized"}))
 

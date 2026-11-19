@@ -48,7 +48,7 @@ from theme_config import (
 )
 from tui.state import discover_local_data_files
 
-APP_VERSION = "2.0.0"
+APP_VERSION = "2.1.0"
 
 _ANSI_CSS_HEX: Dict[str, str] = {
     "black": "#111827",

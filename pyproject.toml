@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "knapset"
-version = "2.0.0"
+version = "2.1.0"
 description = "Zero-dependency database preference, formula, and constraint optimizer (SQLite, CSV, JSON, TUI, Web, MCP)."
 readme = "README.md"
 requires-python = ">=3.10"
