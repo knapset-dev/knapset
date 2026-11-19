@@ -38,6 +38,7 @@ SUBCOMMANDS: Dict[str, str] = {
     "rank": "Rank rows in a table using signed weights (+ max, - min), formulas, and filters",
     "basket": "Pack an optimal multi-item basket under multi-resource limits (0/1 or bounded knapsack)",
     "solve": "Synthesize multi-slot combinations across tables/files with weights, limits, and AST rules",
+    "sensitivity": "Test #1 winner stability and marginal budget impact by perturbing weights and limits",
     "run": "Execute a saved Knapset v2 preset (.json/.toml or installed name) with CLI overrides",
     "preset": "Manage local and registry presets (list, search, info, install, remove, verify)",
     "prefs": "Manage saved preference profiles reusable across DBs (list, show, save, import, export, remove)",
@@ -98,6 +99,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     elif cmd == "solve":
         from v2_cli import run_solve
         run_solve(extra)
+    elif cmd in ("sensitivity", "sens"):
+        from v2_cli import run_sensitivity
+        run_sensitivity(extra)
     elif cmd == "run":
         from v2_cli import run_run
         run_run(extra)

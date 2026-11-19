@@ -465,6 +465,62 @@ class TestV2Phase2CLI(unittest.TestCase):
         self.assertTrue(SafeExpression("regex_match(name, '40[78]0')").evaluate({"name": "RTX 4080"}))
         self.assertAlmostEqual(SafeExpression("pct_diff(80, 100)").evaluate({}), -20.0)
 
+    def test_pin_exclude_and_sensitivity_analysis(self) -> None:
+        from solver_engine import analyze_sensitivity
+
+        # 1. Exclude in rank
+        items = [
+            {"name": "Alpha", "score": 95, "price": 100},
+            {"name": "Beta", "score": 85, "price": 100},
+            {"name": "Gamma", "score": 70, "price": 100},
+        ]
+        ranked, _ = solve_rank(items, weights="score:+1.0", exclude=["Alpha"])
+        self.assertEqual(ranked[0].row["name"], "Beta")
+
+        # 2. Pin & exclude in basket
+        snacks = [
+            {"name": "Bar", "protein": 20, "price": 2},
+            {"name": "Shake", "protein": 30, "price": 4},
+            {"name": "Nuts", "protein": 10, "price": 3},
+        ]
+        baskets, _ = solve_basket(snacks, weights="protein:+1.0", limits=["sum(price) <= 5"], pin=["Nuts"])
+        self.assertGreaterEqual(len(baskets), 1)
+        names_in_top = {it["name"] for it in baskets[0].items}
+        self.assertIn("Nuts", names_in_top)
+
+        # 3. Pin & exclude in solve_sets
+        cpus = [{"name": "Ryzen 7", "score": 100, "price": 300}, {"name": "Ryzen 5", "score": 80, "price": 180}]
+        gpus = [{"name": "RTX 4080", "score": 100, "price": 600}, {"name": "RTX 4070", "score": 85, "price": 400}]
+        sets_pinned, _ = solve_sets(
+            slot_pools={"cpu": cpus, "gpu": gpus},
+            weights="cpu.score:+0.5, gpu.score:+0.5",
+            pin={"cpu": "Ryzen 5"},
+            exclude=["gpu:4080"],
+        )
+        self.assertEqual(len(sets_pinned), 1)
+        self.assertEqual(sets_pinned[0].slots["cpu"]["name"], "Ryzen 5")
+        self.assertEqual(sets_pinned[0].slots["gpu"]["name"], "RTX 4070")
+
+        # 4. Sensitivity report
+        rep = analyze_sensitivity(
+            "solve",
+            slot_pools={"cpu": cpus, "gpu": gpus},
+            weights="cpu.score:+0.4, gpu.score:+0.4, price:-0.2",
+            limits=["sum(price) <= 750"],
+        )
+        self.assertIsNotNone(rep["baseline"])
+        self.assertGreater(len(rep["weight_perturbations"]), 0)
+        self.assertGreater(len(rep["limit_perturbations"]), 0)
+
+        # 5. CLI ks sensitivity --json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "items.csv"
+            p.write_text("name,score,price\nA,90,100\nB,85,80\nC,70,50\n", encoding="utf-8")
+            out = self._run_cli(["sensitivity", str(p), "--prefer", "score:+0.5,price:-0.5", "--json"])
+            data = json.loads(out)
+            self.assertEqual(data["mode"], "rank")
+            self.assertIsNotNone(data["baseline"])
+
 
 if __name__ == "__main__":
     unittest.main()

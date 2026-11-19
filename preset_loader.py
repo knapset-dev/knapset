@@ -34,7 +34,7 @@ from formula_engine import (
     filter_rows,
     parse_weights,
 )
-from solver_engine import DEFAULT_NORM_MODE, solve_basket, solve_rank, solve_sets, validate_norm_mode
+from solver_engine import DEFAULT_NORM_MODE, analyze_sensitivity, solve_basket, solve_rank, solve_sets, validate_norm_mode
 from sources.base import BaseDataSource
 from sources.registry import get_source_registry, open_source
 
@@ -360,6 +360,8 @@ class PresetConfig:
         slot_pools_override: Optional[Dict[str, List[Dict[str, Any]]]] = None,
         norm_override: Optional[str] = None,
         diverse_override: Optional[bool] = None,
+        pin_override: Optional[Dict[str, str] | Sequence[str]] = None,
+        exclude_override: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         """Executes the preset solver pipeline and returns serializable results + metadata."""
         plugins = self.load_plugins()
@@ -408,10 +410,12 @@ class PresetConfig:
                 where=merged_where,
                 top_n=eff_top,
                 norm=eff_norm,
+                exclude=exclude_override,
             )
             results = [r.to_dict() for r in ranked]
         elif eff_mode == "basket":
             first_rows = next(iter(slot_pools.values()), [])
+            pin_list = list(pin_override.values()) if isinstance(pin_override, dict) else (list(pin_override) if pin_override else None)
             sols, meta = solve_basket(
                 rows=first_rows,
                 weights=base_weights,
@@ -422,6 +426,8 @@ class PresetConfig:
                 max_per_item=self.max_per_item,
                 qty_field=self.qty_field,
                 norm=eff_norm,
+                pin=pin_list,
+                exclude=exclude_override,
             )
             results = [s.to_dict() for s in sols]
         elif eff_mode == "solve":
@@ -435,6 +441,8 @@ class PresetConfig:
                 top_n=eff_top,
                 norm=eff_norm,
                 diverse=eff_diverse,
+                pin=pin_override,
+                exclude=exclude_override,
             )
             results = [s.to_dict() for s in sols]
         else:
@@ -466,6 +474,66 @@ class PresetConfig:
             "meta": meta,
             "results": results,
         }
+
+    def sensitivity(
+        self,
+        profile_name: Optional[str] = None,
+        mode_override: Optional[str] = None,
+        prefer_override: Optional[str | Dict[str, Any] | Sequence[str]] = None,
+        limits_override: Optional[Sequence[str]] = None,
+        where_override: Optional[Sequence[str]] = None,
+        formulas_override: Optional[Sequence[str] | Dict[str, str]] = None,
+        rules_override: Optional[Sequence[str]] = None,
+        norm_override: Optional[str] = None,
+        weight_delta: float = 0.15,
+        limit_delta: float = 0.10,
+        pin_override: Optional[Dict[str, str] | Sequence[str]] = None,
+        exclude_override: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Runs weight & limit sensitivity analysis on this preset."""
+        plugins = self.load_plugins()
+        prof_key, prof_data = self.resolve_profile(profile_name)
+        eff_mode = (mode_override or prof_data.get("mode") or self.mode).lower().strip()
+        eff_norm = validate_norm_mode(norm_override or prof_data.get("norm") or self.norm)
+        base_weights = dict(prof_data.get("weights") or {})
+        if prefer_override:
+            for t in parse_weights(prefer_override):
+                base_weights[t.expression] = t.weight
+        merged_formulas: List[str] = []
+        if isinstance(self.formulas, dict):
+            merged_formulas.extend(f"{k} = {v}" for k, v in self.formulas.items())
+        elif isinstance(self.formulas, list):
+            merged_formulas.extend(str(x) for x in self.formulas)
+        if formulas_override:
+            if isinstance(formulas_override, dict):
+                merged_formulas.extend(f"{k} = {v}" for k, v in formulas_override.items())
+            else:
+                merged_formulas.extend(str(x) for x in formulas_override)
+        merged_where = list(self.where) + list(prof_data.get("where") or []) + list(where_override or [])
+        merged_limits = list(limits_override) if limits_override else list(prof_data.get("limits") or self.limits)
+        merged_rules = list(self.rules) + list(prof_data.get("rules") or []) + list(rules_override or [])
+        slot_pools = self.load_slots(plugins=plugins)
+        first_rows = next(iter(slot_pools.values()), [])
+        report = analyze_sensitivity(
+            eff_mode,
+            rows=first_rows if eff_mode in ("rank", "basket") else None,
+            slot_pools=slot_pools if eff_mode == "solve" else None,
+            weights=base_weights,
+            limits=merged_limits,
+            rules=merged_rules,
+            formulas=merged_formulas,
+            where=merged_where,
+            norm=eff_norm,
+            weight_delta=weight_delta,
+            limit_delta=limit_delta,
+            max_per_item=self.max_per_item,
+            qty_field=self.qty_field,
+            pin=pin_override,
+            exclude=exclude_override,
+        )
+        report["preset"] = self.name
+        report["profile"] = prof_key
+        return report
 
 
 def load_preset(path: str | Path) -> PresetConfig:

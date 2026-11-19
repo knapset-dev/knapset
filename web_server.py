@@ -36,7 +36,7 @@ from preset_loader import (
     save_preset,
     save_shared_profile,
 )
-from solver_engine import solve_basket, solve_rank, solve_sets
+from solver_engine import analyze_sensitivity, solve_basket, solve_rank, solve_sets
 from sources.registry import inspect_source, open_source
 from theme_config import (
     ThemeConfig,
@@ -698,6 +698,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             top_n=top_n,
             norm_override=payload.get("norm"),
             diverse_override=payload.get("diverse") if "diverse" in payload else None,
+            pin_override=payload.get("pin"),
+            exclude_override=payload.get("exclude"),
         )
 
     source_target = payload.get("source")
@@ -741,13 +743,21 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
     if eff_mode == "rank":
         first_rows = next(iter(slot_pools.values()), [])
         ranked, meta = solve_rank(
-            first_rows, weights=eff_weights, formulas=eff_formulas, where=eff_where, top_n=top_n, norm=eff_norm
+            first_rows,
+            weights=eff_weights,
+            formulas=eff_formulas,
+            where=eff_where,
+            top_n=top_n,
+            norm=eff_norm,
+            exclude=payload.get("exclude"),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
         return {"mode": "rank", "meta": meta, "results": [r.to_dict() for r in ranked]}
     if eff_mode == "basket":
         first_rows = next(iter(slot_pools.values()), [])
+        pin_raw = payload.get("pin")
+        pin_list = list(pin_raw.values()) if isinstance(pin_raw, dict) else (list(pin_raw) if pin_raw else None)
         sols, meta = solve_basket(
             first_rows,
             weights=eff_weights,
@@ -758,6 +768,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             max_per_item=int(payload.get("max_per_item", 1)),
             qty_field=payload.get("qty_field"),
             norm=eff_norm,
+            pin=pin_list,
+            exclude=payload.get("exclude"),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -772,6 +784,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         top_n=top_n,
         norm=eff_norm,
         diverse=eff_diverse,
+        pin=payload.get("pin"),
+        exclude=payload.get("exclude"),
     )
     if skipped:
         meta["skipped_prefs_terms"] = skipped
@@ -883,6 +897,67 @@ class KnapsetV2WebHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, res)
             elif self.path == "/api/solve":
                 self._send_json(HTTPStatus.OK, _execute_solve_request(body))
+            elif self.path == "/api/sensitivity":
+                if body.get("preset") and not body.get("source"):
+                    cfg = resolve_preset(str(body["preset"]))
+                    rep = cfg.sensitivity(
+                        profile_name=body.get("profile"),
+                        mode_override=body.get("mode") or None,
+                        prefer_override=body.get("weights") or None,
+                        limits_override=body.get("limits") or None,
+                        where_override=body.get("where") or None,
+                        formulas_override=body.get("formulas") or None,
+                        rules_override=body.get("rules") or None,
+                        norm_override=body.get("norm"),
+                        weight_delta=float(body.get("weight_delta", 0.15)),
+                        limit_delta=float(body.get("limit_delta", 0.10)),
+                        pin_override=body.get("pin"),
+                        exclude_override=body.get("exclude"),
+                    )
+                else:
+                    src = open_source(str(body["source"]))
+                    schema = src.inspect()
+                    req_table = body.get("table")
+                    eff_mode = str(body.get("mode") or ("solve" if len(schema.table_names()) > 1 and not req_table else "rank")).lower()
+                    if eff_mode == "solve":
+                        pools = {t: src.load_rows(table=t) for t in schema.table_names()}
+                        ref_specs = collect_ref_specs(body)
+                        if ref_specs:
+                            enrich_slot_pools(pools, ref_specs)
+                        rep = analyze_sensitivity(
+                            "solve",
+                            slot_pools=pools,
+                            weights=body.get("weights") or "",
+                            limits=body.get("limits"),
+                            rules=body.get("rules"),
+                            formulas=body.get("formulas"),
+                            where=body.get("where"),
+                            norm=body.get("norm") or "robust",
+                            weight_delta=float(body.get("weight_delta", 0.15)),
+                            limit_delta=float(body.get("limit_delta", 0.10)),
+                            pin=body.get("pin"),
+                            exclude=body.get("exclude"),
+                        )
+                    else:
+                        rows = src.load_rows(table=req_table, query=body.get("query"))
+                        pools = {"_pool": rows}
+                        ref_specs = collect_ref_specs(body)
+                        if ref_specs:
+                            enrich_slot_pools(pools, ref_specs)
+                        rep = analyze_sensitivity(
+                            eff_mode,
+                            rows=pools["_pool"],
+                            weights=body.get("weights") or "",
+                            limits=body.get("limits"),
+                            formulas=body.get("formulas"),
+                            where=body.get("where"),
+                            norm=body.get("norm") or "robust",
+                            weight_delta=float(body.get("weight_delta", 0.15)),
+                            limit_delta=float(body.get("limit_delta", 0.10)),
+                            pin=body.get("pin"),
+                            exclude=body.get("exclude"),
+                        )
+                self._send_json(HTTPStatus.OK, rep)
             elif self.path == "/api/save-preset":
                 out_path = save_preset(PresetConfig.from_dict(body["preset"]), body["path"], overwrite=True)
                 self._send_json(HTTPStatus.OK, {"saved": str(out_path)})

@@ -116,6 +116,74 @@ def _row_signature(row: Dict[str, Any], fallback_idx: int) -> str:
     return f"idx:{fallback_idx}"
 
 
+def _row_display_label(row: Dict[str, Any]) -> str:
+    for key in ("title", "name", "model", "sku", "id"):
+        if row.get(key) is not None and str(row[key]).strip():
+            return str(row[key]).strip()
+    return str(row)[:48]
+
+
+def _row_matches_needle(row: Dict[str, Any], needle: str) -> bool:
+    """Matches a user pin/exclude pattern against common identifier/name fields (case-insensitive)."""
+    q = str(needle or "").strip().lower()
+    if not q:
+        return False
+    for key in ("id", "sku", "title", "name", "model"):
+        val = row.get(key)
+        if val is None:
+            continue
+        s = str(val).strip().lower()
+        if s == q or q in s:
+            return True
+    return False
+
+
+def _apply_excludes(
+    rows: Sequence[Dict[str, Any]],
+    exclude: Optional[Sequence[str]],
+    slot_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Removes rows matching any global or slot-scoped exclude pattern (`'needle'` or `'slot:needle'`)."""
+    patterns = [str(x).strip() for x in (exclude or []) if str(x).strip()]
+    if not patterns:
+        return list(rows)
+    active_needles: List[str] = []
+    for p in patterns:
+        if slot_name is not None:
+            if ":" in p:
+                lhs, rhs = p.split(":", 1)
+                if lhs.strip().lower() == slot_name.lower():
+                    active_needles.append(rhs.strip())
+                continue
+            if "=" in p:
+                lhs, rhs = p.split("=", 1)
+                if lhs.strip().lower() == slot_name.lower():
+                    active_needles.append(rhs.strip())
+                continue
+        active_needles.append(p)
+    if not active_needles:
+        return list(rows)
+    return [r for r in rows if not any(_row_matches_needle(r, nd) for nd in active_needles)]
+
+
+def _parse_pin_map(pin: Optional[Dict[str, str] | Sequence[str]]) -> Dict[str, str]:
+    """Parses slot pins from either `{slot: needle}` or `['slot=needle', 'slot:needle']`."""
+    if not pin:
+        return {}
+    if isinstance(pin, dict):
+        return {str(k).strip(): str(v).strip() for k, v in pin.items() if str(k).strip() and str(v).strip()}
+    out: Dict[str, str] = {}
+    for entry in pin:
+        s = str(entry).strip()
+        if "=" in s:
+            k, v = s.split("=", 1)
+            out[k.strip()] = v.strip()
+        elif ":" in s:
+            k, v = s.split(":", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
 VALID_NORM_MODES: Tuple[str, ...] = ("robust", "minmax", "rank")
 DEFAULT_NORM_MODE: str = "robust"
 
@@ -317,16 +385,18 @@ def solve_rank(
     where: Optional[Sequence[str]] = None,
     top_n: int = 20,
     norm: str = DEFAULT_NORM_MODE,
+    exclude: Optional[Sequence[str]] = None,
 ) -> Tuple[List[RankedItem], Dict[str, Any]]:
     """
     Ranks rows from a single (optionally reference-enriched) table using signed weights
-    and configurable normalization (`robust` P5-P95, `minmax`, or `rank`).
+    and configurable normalization (`robust` Tukey-IQR, `minmax`, or `rank`).
     """
     norm_mode = validate_norm_mode(norm)
     total_input = len(rows)
     f_specs = parse_formulas(formulas)
     processed = apply_row_formulas(list(rows), f_specs)
-    filtered = filter_rows(processed, where)
+    after_where = filter_rows(processed, where)
+    filtered = _apply_excludes(after_where, exclude)
     terms = parse_weights(weights) if weights else []
     scores, breakdowns = score_rows_normalized(filtered, terms, norm=norm_mode)
 
@@ -343,7 +413,11 @@ def solve_rank(
         "returned": min(len(ranked), max(0, int(top_n))) if top_n > 0 else len(ranked),
     }
     if not filtered:
-        meta["diagnostics"] = _diagnose_where(processed, where)
+        if after_where and exclude:
+            msg = f"All {len(after_where)} filtered row(s) were excluded by --exclude ({', '.join(exclude)})."
+            meta["diagnostics"] = {"summary": msg, "reasons": [msg]}
+        else:
+            meta["diagnostics"] = _diagnose_where(processed, where)
     if top_n > 0:
         ranked = ranked[: int(top_n)]
     return ranked, meta
@@ -396,6 +470,8 @@ def solve_basket(
     qty_field: Optional[str] = None,
     max_nodes: int = 120000,
     norm: str = DEFAULT_NORM_MODE,
+    pin: Optional[Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
 ) -> Tuple[List[BasketSolution], Dict[str, Any]]:
     """
     Solves 0/1 or bounded multi-item knapsack from a pool of rows under multi-resource limits.
@@ -405,20 +481,44 @@ def solve_basket(
     total_input = len(rows)
     f_specs = parse_formulas(formulas)
     processed = apply_row_formulas(list(rows), f_specs)
-    filtered = filter_rows(processed, where)
+    after_where = filter_rows(processed, where)
+    filtered = _apply_excludes(after_where, exclude)
     terms = parse_weights(weights) if weights else []
     parsed_limits = _parse_limits(limits)
     scores, _ = score_rows_normalized(filtered, terms, norm=norm_mode)
 
     if not filtered:
+        diag = (
+            {"summary": f"All {len(after_where)} filtered row(s) were excluded.", "reasons": [f"Excluded by {', '.join(exclude)}."]}
+            if (after_where and exclude)
+            else _diagnose_where(processed, where)
+        )
         return [], {
             "mode": "basket",
             "norm": norm_mode,
             "total_input": total_input,
             "after_filter": 0,
             "nodes_explored": 0,
-            "diagnostics": _diagnose_where(processed, where),
+            "diagnostics": diag,
         }
+
+    pin_needles = [str(p).strip() for p in (pin or []) if str(p).strip()]
+    pinned_indices: Set[int] = set()
+    for needle in pin_needles:
+        matches = [i for i, r in enumerate(filtered) if _row_matches_needle(r, needle)]
+        if not matches:
+            reason = f"Pinned item '{needle}' not found among {len(filtered)} candidate row(s)."
+            return [], {
+                "mode": "basket",
+                "norm": norm_mode,
+                "total_input": total_input,
+                "after_filter": len(filtered),
+                "nodes_explored": 0,
+                "diagnostics": {"summary": reason, "reasons": [reason]},
+            }
+        # Pin the highest-scoring matching item if multiple match the needle
+        best_match = max(matches, key=lambda idx: scores[idx])
+        pinned_indices.add(best_match)
 
     max_qty_list = [_resolve_item_max_qty(r, max(1, int(max_per_item)), qty_field) for r in filtered]
 
@@ -445,9 +545,12 @@ def solve_basket(
     else:
         indices.sort(key=lambda i: (-scores[i], i))
 
-    # Adaptive window: fractional-knapsack pruning scales comfortably to larger candidate sets
+    # Adaptive window: keep all pinned items plus highest-efficiency candidates
     cap = 120 if upper_sum_limits else 60
-    active = indices[:cap] if len(indices) > cap else indices
+    if len(indices) > cap:
+        active = list(dict.fromkeys([i for i in indices if i in pinned_indices] + indices))[: max(cap, len(pinned_indices))]
+    else:
+        active = indices
     m = len(active)
 
     suffix_max_util = [0.0] * (m + 1)
@@ -561,8 +664,11 @@ def solve_basket(
                     break
                 max_q = min(max_q, int(math.floor((rem + 1e-9) / unit_cost)))
 
-        # Branch descending from max_q down to 0 (greedy-first explores strong packings early)
-        for q in range(max_q, -1, -1):
+        # Branch descending from max_q down to min_q (min_q=1 for pinned items)
+        min_q = 1 if item_idx in pinned_indices else 0
+        if max_q < min_q:
+            return
+        for q in range(max_q, min_q - 1, -1):
             if nodes >= max_nodes:
                 truncated = True
                 return
@@ -871,11 +977,13 @@ def solve_sets(
     should_abort: Optional[Callable[[], bool]] = None,
     norm: str = DEFAULT_NORM_MODE,
     diverse: bool = False,
+    pin: Optional[Dict[str, str] | Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
 ) -> Tuple[List[SetSolution], Dict[str, Any]]:
     """
     Solves multi-slot combinatorial optimization (1 item per slot in `slot_pools`) using
     signed-weight normalization (`robust`/`minmax`/`rank`), early AST rule pruning,
-    multi-resource bounds, infeasibility diagnostics, and optional diverse Top-N selection.
+    multi-resource bounds, infeasibility diagnostics, pin/exclude, and diverse Top-N selection.
     """
     norm_mode = validate_norm_mode(norm)
     slot_names = list(slot_pools.keys())
@@ -884,10 +992,28 @@ def solve_sets(
 
     f_specs = parse_formulas(formulas)
     where_list = list(where or [])
-    filtered_pools: Dict[str, List[Dict[str, Any]]] = {
-        sname: _filter_slot_rows(sname, slot_pools[sname], f_specs, where_list)
-        for sname in slot_names
-    }
+    pin_map = _parse_pin_map(pin)
+    filtered_pools: Dict[str, List[Dict[str, Any]]] = {}
+    pin_errors: List[str] = []
+    for sname in slot_names:
+        pool_rows = _filter_slot_rows(sname, slot_pools[sname], f_specs, where_list)
+        pool_rows = _apply_excludes(pool_rows, exclude, slot_name=sname)
+        if sname in pin_map:
+            needle = pin_map[sname]
+            pinned = [r for r in pool_rows if _row_matches_needle(r, needle)]
+            if not pinned:
+                pin_errors.append(f"Pinned item '{needle}' not found in slot '{sname}'.")
+            pool_rows = pinned
+        filtered_pools[sname] = pool_rows
+    if pin_errors:
+        return [], {
+            "mode": "solve",
+            "norm": norm_mode,
+            "slot_counts": {s: len(filtered_pools[s]) for s in slot_names},
+            "nodes_explored": 0,
+            "feasible_count": 0,
+            "diagnostics": {"summary": pin_errors[0], "reasons": pin_errors},
+        }
     empty_slots = [s for s in slot_names if len(filtered_pools[s]) == 0]
     if empty_slots:
         reasons: List[str] = []
@@ -1363,3 +1489,174 @@ def solve_sets(
         "truncated": truncated,
     }
     return selected, meta
+
+
+def _winner_summary(mode: str, results: Sequence[Any]) -> Tuple[Optional[str], Optional[float]]:
+    if not results:
+        return None, None
+    top = results[0]
+    if mode == "rank":
+        return _row_display_label(top.row), round(float(top.score), 2)
+    if mode == "basket":
+        lbl = " + ".join(
+            f"{_row_display_label(it)}{f' x{cnt}' if cnt > 1 else ''}"
+            for it, cnt in zip(top.items, top.counts)
+        )
+        return lbl, round(float(top.total_score), 2)
+    lbl = " | ".join(f"{s}={_row_display_label(it)}" for s, it in top.slots.items())
+    return lbl, round(float(top.total_score), 2)
+
+
+def _format_adjusted_limit(lim: LimitSpec, new_rhs: float) -> str:
+    if lim.agg == "count" and not lim.inner_expr:
+        return f"count {lim.op} {new_rhs:g}"
+    return f"{lim.agg}({lim.inner_expr or '*'}) {lim.op} {new_rhs:g}"
+
+
+def analyze_sensitivity(
+    mode: str,
+    *,
+    rows: Optional[Sequence[Dict[str, Any]]] = None,
+    slot_pools: Optional[Dict[str, Sequence[Dict[str, Any]]]] = None,
+    weights: str | Dict[str, Any] | Sequence[str] = "",
+    limits: Optional[Sequence[str | LimitSpec]] = None,
+    rules: Optional[Sequence[str | RuleSpec]] = None,
+    formulas: Optional[Sequence[str] | Dict[str, str]] = None,
+    where: Optional[Sequence[str]] = None,
+    norm: str = DEFAULT_NORM_MODE,
+    weight_delta: float = 0.15,
+    limit_delta: float = 0.10,
+    max_per_item: int = 1,
+    qty_field: Optional[str] = None,
+    pin: Optional[Dict[str, str] | Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Perturbs each weight (±weight_delta) and each limit (±limit_delta) to measure
+    #1 winner stability, closest challenger, and marginal shadow gain of relaxing limits.
+    """
+    eff_mode = (mode or "rank").strip().lower()
+    norm_mode = validate_norm_mode(norm)
+    terms = parse_weights(weights) if weights else []
+    parsed_limits = _parse_limits(limits)
+
+    def _run_once(w_map: Dict[str, float], lim_list: Sequence[str | LimitSpec]) -> Tuple[Optional[str], Optional[float]]:
+        if eff_mode == "rank":
+            res, _ = solve_rank(
+                rows=rows or [],
+                weights=w_map,
+                formulas=formulas,
+                where=where,
+                top_n=1,
+                norm=norm_mode,
+                exclude=exclude,
+            )
+            return _winner_summary("rank", res)
+        if eff_mode == "basket":
+            pin_list = list(pin.values()) if isinstance(pin, dict) else (list(pin) if pin else None)
+            res, _ = solve_basket(
+                rows=rows or [],
+                weights=w_map,
+                limits=lim_list,
+                formulas=formulas,
+                where=where,
+                top_n=1,
+                max_per_item=max_per_item,
+                qty_field=qty_field,
+                norm=norm_mode,
+                pin=pin_list,
+                exclude=exclude,
+            )
+            return _winner_summary("basket", res)
+        res, _ = solve_sets(
+            slot_pools=slot_pools or {},
+            weights=w_map,
+            limits=lim_list,
+            rules=rules,
+            formulas=formulas,
+            where=where,
+            top_n=1,
+            norm=norm_mode,
+            pin=pin,
+            exclude=exclude,
+        )
+        return _winner_summary("solve", res)
+
+    base_weights = {t.expression: t.weight for t in terms}
+    base_label, base_score = _run_once(base_weights, parsed_limits)
+    if base_label is None:
+        return {
+            "mode": eff_mode,
+            "norm": norm_mode,
+            "baseline": None,
+            "stability_pct": 0.0,
+            "closest_challenger": None,
+            "weight_perturbations": [],
+            "limit_perturbations": [],
+        }
+
+    weight_perts: List[Dict[str, Any]] = []
+    challenger_counts: Dict[str, int] = {}
+    same_count = 0
+    for term in terms:
+        for mult in (1.0 - weight_delta, 1.0 + weight_delta):
+            if mult <= 0.0:
+                continue
+            mod_w = dict(base_weights)
+            mod_w[term.expression] = round(term.weight * mult, 6)
+            w_lbl, w_sc = _run_once(mod_w, parsed_limits)
+            changed = w_lbl != base_label
+            if not changed:
+                same_count += 1
+            elif w_lbl:
+                challenger_counts[w_lbl] = challenger_counts.get(w_lbl, 0) + 1
+            weight_perts.append(
+                {
+                    "term": term.expression,
+                    "factor": round(mult, 4),
+                    "new_weight": mod_w[term.expression],
+                    "winner": w_lbl,
+                    "score": w_sc,
+                    "changed": changed,
+                }
+            )
+
+    limit_perts: List[Dict[str, Any]] = []
+    for idx, lim in enumerate(parsed_limits):
+        if lim.rhs == 0:
+            continue
+        for mult in (1.0 - limit_delta, 1.0 + limit_delta):
+            new_rhs = round(lim.rhs * mult, 4)
+            if lim.agg == "count":
+                new_rhs = float(max(1, round(new_rhs)))
+                if new_rhs == lim.rhs:
+                    continue
+            adj_str = _format_adjusted_limit(lim, new_rhs)
+            mod_lims: List[str | LimitSpec] = list(parsed_limits)
+            mod_lims[idx] = adj_str
+            l_lbl, l_sc = _run_once(base_weights, mod_lims)
+            delta_sc = round(l_sc - base_score, 2) if (l_sc is not None and base_score is not None) else None
+            limit_perts.append(
+                {
+                    "limit": lim.raw,
+                    "adjusted_limit": adj_str,
+                    "factor": round(mult, 4),
+                    "feasible": l_lbl is not None,
+                    "winner": l_lbl,
+                    "score": l_sc,
+                    "score_delta": delta_sc,
+                    "changed": l_lbl != base_label,
+                }
+            )
+
+    stability = round((same_count / len(weight_perts)) * 100.0, 1) if weight_perts else 100.0
+    closest = max(challenger_counts.items(), key=lambda kv: kv[1])[0] if challenger_counts else None
+    return {
+        "mode": eff_mode,
+        "norm": norm_mode,
+        "baseline": {"label": base_label, "score": base_score},
+        "stability_pct": stability,
+        "closest_challenger": closest,
+        "weight_perturbations": weight_perts,
+        "limit_perturbations": limit_perts,
+    }

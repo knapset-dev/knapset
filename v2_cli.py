@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_from_source, enrich_rows, infer_default_match, parse_match_expr
-from solver_engine import BasketSolution, RankedItem, SetSolution, solve_basket, solve_rank, solve_sets
+from solver_engine import BasketSolution, RankedItem, SetSolution, analyze_sensitivity, solve_basket, solve_rank, solve_sets
 from sources.base import SourceSchema, TableSchema
 from sources.registry import open_source
 
@@ -428,7 +428,8 @@ def _add_common_solve_flags(parser: argparse.ArgumentParser, default_top: int = 
     parser.add_argument("--where", "-w", action="append", default=[], help="Row filter expression, e.g. 'vram >= 12 and price <= 600'")
     parser.add_argument("--prefer", "-p", action="append", default=[], help="Signed weights, e.g. 'ref.score:+0.7,price:-0.3'")
     parser.add_argument("--prefs", default=None, help="Saved preference profile name (see `prefs list`) or profile/preset file; explicit flags override it")
-    parser.add_argument("--norm", choices=["robust", "minmax", "rank"], default=None, help="Normalization mode: robust (P5-P95 default), minmax, or rank")
+    parser.add_argument("--norm", choices=["robust", "minmax", "rank"], default=None, help="Normalization mode: robust (Tukey-IQR default), minmax, or rank")
+    parser.add_argument("--exclude", "-x", action="append", default=[], help="Exclude matching rows (e.g. 'RTX 3050' or 'gpu:RTX 3050')")
     parser.add_argument("--top", "-n", type=int, default=default_top, help=f"Number of results to return (default: {default_top})")
     parser.add_argument("--explain", action="store_true", help="Print per-term normalized score breakdown")
     parser.add_argument("--json", action="store_true", help="Output structured JSON")
@@ -507,6 +508,7 @@ def run_rank(argv: List[str]) -> None:
         where=args.where,
         top_n=args.top,
         norm=args.norm or "robust",
+        exclude=args.exclude,
     )
 
     payload = {"meta": meta, "results": [r.to_dict() for r in ranked]}
@@ -546,6 +548,7 @@ def run_basket(argv: List[str]) -> None:
     parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit, e.g. 'sum(price) <= 1000', 'count <= 5'")
     parser.add_argument("--max-per-item", type=int, default=1, help="Max copies per row (default: 1 for 0/1 knapsack)")
     parser.add_argument("--qty-field", default=None, help="Optional column capping per-row quantity")
+    parser.add_argument("--pin", action="append", default=[], help="Force an item into every basket (name/title/id substring)")
     _add_common_solve_flags(parser, default_top=5)
     args = parser.parse_args(argv)
     _apply_prefs(args)
@@ -568,6 +571,8 @@ def run_basket(argv: List[str]) -> None:
         max_per_item=args.max_per_item,
         qty_field=args.qty_field,
         norm=args.norm or "robust",
+        pin=args.pin,
+        exclude=args.exclude,
     )
 
     payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
@@ -617,6 +622,7 @@ def run_solve(argv: List[str]) -> None:
     parser.add_argument("--slot", action="append", default=[], help="Slot source binding: 'name=path[:table]'")
     parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit, e.g. 'sum(price) <= 1000'")
     parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule, e.g. 'cpu.socket == mobo.socket'")
+    parser.add_argument("--pin", action="append", default=[], help="Lock a slot item: 'slot=name_or_id'")
     parser.add_argument("--diverse", action="store_true", help="Diversify Top-N combinations (avoid repeating nearly identical sets)")
     _add_common_solve_flags(parser, default_top=5)
     args = parser.parse_args(argv)
@@ -665,6 +671,8 @@ def run_solve(argv: List[str]) -> None:
         top_n=args.top,
         norm=args.norm or "robust",
         diverse=bool(args.diverse),
+        pin=args.pin,
+        exclude=args.exclude,
     )
 
     payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
@@ -796,6 +804,8 @@ def run_run(argv: List[str]) -> None:
     parser.add_argument("--prefer", "-p", action="append", default=[], help="Override signed weights, e.g. 'price:-0.5,score:+0.5'")
     parser.add_argument("--limit", "-l", action="append", default=[], help="Override aggregate limits, e.g. 'sum(price) <= 900'")
     parser.add_argument("--rule", "-r", action="append", default=[], help="Append compatibility rule")
+    parser.add_argument("--pin", action="append", default=[], help="Pin item ('slot=pattern' for solve or 'pattern' for basket)")
+    parser.add_argument("--exclude", "-x", action="append", default=[], help="Exclude matching item ('pattern' or 'slot:pattern')")
     parser.add_argument("--norm", choices=["robust", "minmax", "rank"], default=None, help="Override normalization mode")
     parser.add_argument("--diverse", action="store_true", help="Diversify Top-N combinations")
     parser.add_argument("--top", "-n", type=int, default=None, help="Override top N results")
@@ -824,6 +834,8 @@ def run_run(argv: List[str]) -> None:
         source_overrides=src_overrides or None,
         norm_override=args.norm,
         diverse_override=True if args.diverse else None,
+        pin_override=args.pin or None,
+        exclude_override=args.exclude or None,
     )
 
     if args.export:
@@ -835,6 +847,117 @@ def run_run(argv: List[str]) -> None:
         return
 
     _print_preset_execution(res, explain=args.explain)
+
+
+def run_sensitivity(argv: List[str]) -> None:
+    """`ks sensitivity` — perturb weights and limits to measure #1 stability and shadow gains."""
+    from preset_loader import resolve_preset
+
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} sensitivity",
+        description="Analyze #1 winner stability under weight shifts and marginal budget/limit changes.",
+    )
+    parser.add_argument("target", help="Preset name/path or data source (.db/.csv/.json)")
+    parser.add_argument("--profile", "-P", default=None, help="Preset profile name")
+    parser.add_argument("--mode", "-m", choices=["rank", "basket", "solve"], default=None, help="Optimization mode")
+    parser.add_argument("--table", "-t", default=None, help="Table/collection name (for single-table rank/basket)")
+    parser.add_argument("--tables", default=None, help="Comma-separated tables for multi-slot solve")
+    parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit")
+    parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule")
+    parser.add_argument("--pin", action="append", default=[], help="Pin item ('slot=pattern' or 'pattern')")
+    parser.add_argument("--weight-delta", type=float, default=0.15, help="Relative weight shift (default: 0.15 = +/-15%%)")
+    parser.add_argument("--limit-delta", type=float, default=0.10, help="Relative limit shift (default: 0.10 = +/-10%%)")
+    _add_common_solve_flags(parser, default_top=5)
+    args = parser.parse_args(argv)
+    _apply_prefs(args)
+
+    report: Optional[Dict[str, Any]] = None
+    # Try resolving as preset first when target is not a raw tabular/sqlite file
+    p_cand = Path(args.target).expanduser()
+    is_raw_data = p_cand.is_file() and p_cand.suffix.lower() in (".db", ".sqlite", ".sqlite3", ".csv", ".tsv", ".jsonl", ".ndjson")
+    if not is_raw_data and args.target != "-":
+        try:
+            cfg = resolve_preset(args.target)
+            report = cfg.sensitivity(
+                profile_name=args.profile,
+                mode_override=args.mode,
+                prefer_override=args.prefer or None,
+                limits_override=args.limit or None,
+                where_override=args.where or None,
+                formulas_override=args.formula or None,
+                rules_override=args.rule or None,
+                norm_override=args.norm,
+                weight_delta=args.weight_delta,
+                limit_delta=args.limit_delta,
+                pin_override=args.pin or None,
+                exclude_override=args.exclude or None,
+            )
+        except Exception:
+            report = None
+
+    if report is None:
+        src = open_source(args.target)
+        schema = src.inspect()
+        tables = [t.strip() for t in args.tables.split(",") if t.strip()] if args.tables else schema.table_names()
+        eff_mode = args.mode or ("solve" if len(tables) > 1 and not args.table else "rank")
+        if eff_mode == "solve":
+            pools = {t: src.load_rows(table=t) for t in tables}
+            report = analyze_sensitivity(
+                "solve",
+                slot_pools=pools,
+                weights=args.prefer,
+                limits=args.limit,
+                rules=args.rule,
+                formulas=args.formula,
+                where=args.where,
+                norm=args.norm or "robust",
+                weight_delta=args.weight_delta,
+                limit_delta=args.limit_delta,
+                pin=args.pin or None,
+                exclude=args.exclude or None,
+            )
+        else:
+            rows = src.load_rows(table=args.table)
+            ref_specs = [
+                _parse_ref_spec(r, args.match, args.strategy, args.alias, args.on_unmatched)
+                for r in args.ref
+            ]
+            if ref_specs:
+                rows = _enrich_rows_with_refs(rows, ref_specs)
+            report = analyze_sensitivity(
+                eff_mode,
+                rows=rows,
+                weights=args.prefer,
+                limits=args.limit,
+                formulas=args.formula,
+                where=args.where,
+                norm=args.norm or "robust",
+                weight_delta=args.weight_delta,
+                limit_delta=args.limit_delta,
+                pin=args.pin or None,
+                exclude=args.exclude or None,
+            )
+
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+
+    base = report.get("baseline")
+    print(f"\nSensitivity Analysis [mode={report['mode']}, norm={report['norm']}]")
+    print("═" * 84)
+    if not base:
+        print("  (No feasible baseline solution found.)\n")
+        return
+    print(f"  Baseline #1  : [{base['score']}] {base['label']}")
+    print(f"  Stability    : {report['stability_pct']:.1f}% under ±{int(args.weight_delta * 100)}% weight shifts")
+    if report.get("closest_challenger"):
+        print(f"  Challenger   : {report['closest_challenger']}")
+    if report.get("limit_perturbations"):
+        print("  Limit Shifts :")
+        for lp in report["limit_perturbations"]:
+            delta_s = f"{lp['score_delta']:+.1f}" if lp.get("score_delta") is not None else "infeasible"
+            print(f"    • {lp['adjusted_limit']:<28} -> score {lp['score']} ({delta_s}) {'[CHANGED]' if lp['changed'] else ''}")
+    print()
 
 
 def run_preset(argv: List[str]) -> None:

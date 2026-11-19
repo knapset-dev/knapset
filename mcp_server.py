@@ -31,7 +31,7 @@ from preset_loader import (
     resolve_shared_profile,
     save_shared_profile,
 )
-from solver_engine import solve_basket, solve_rank, solve_sets
+from solver_engine import analyze_sensitivity, solve_basket, solve_rank, solve_sets
 from sources.registry import inspect_source, open_source
 from theme_config import (
     discover_themes,
@@ -116,6 +116,7 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Filter predicates e.g. ['price <= 600']."},
                 "weights": {"type": "string", "description": "Signed weights e.g. 'ref.score:+0.7, price:-0.3'."},
                 "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
+                "exclude": {"type": "array", "items": {"type": "string"}, "description": "Exclude matching rows by title/name/id substring."},
                 "top_n": {"type": "integer", "description": "Top items to return (default: 10)."},
             },
             "required": ["source"],
@@ -145,6 +146,8 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "max_per_item": {"type": "integer", "description": "Max quantity per row (default: 1)."},
                 "qty_field": {"type": "string", "description": "Optional row field capping per-item quantity."},
                 "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
+                "pin": {"type": "array", "items": {"type": "string"}, "description": "Force matching item(s) into every basket."},
+                "exclude": {"type": "array", "items": {"type": "string"}, "description": "Exclude matching rows by title/name/id substring."},
                 "top_n": {"type": "integer", "description": "Top basket solutions to return (default: 5)."},
             },
             "required": ["source"],
@@ -177,6 +180,8 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Optional filters."},
                 "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
                 "diverse": {"type": "boolean", "description": "Diversify Top-N multi-slot combinations."},
+                "pin": {"type": "object", "description": "Lock specific slots e.g. {'cpu': 'Ryzen 5 7600'}."},
+                "exclude": {"type": "array", "items": {"type": "string"}, "description": "Exclude matching rows e.g. ['RTX 3050', 'gpu:GT 1030']."},
                 "top_n": {"type": "integer", "description": "Top sets to return (default: 5)."},
             },
         },
@@ -244,6 +249,28 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "registry": {"type": "string", "description": "Optional local registry path or URL override."},
             },
             "required": ["action"],
+        },
+    },
+    {
+        "name": "knapset_sensitivity",
+        "description": "Test #1 winner stability under weight perturbations and compute marginal shadow gain of relaxing limits.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {"type": "string", "description": "Optional preset name or path."},
+                "profile": {"type": "string", "description": "Optional preset profile name."},
+                "source": {"type": "string", "description": "Primary source path/URI (if not using a preset)."},
+                "table": {"type": "string", "description": "Optional table name."},
+                "mode": {"type": "string", "enum": ["rank", "basket", "solve"], "description": "Optimization mode."},
+                "weights": {"type": "string", "description": "Signed weights."},
+                "limits": {"type": "array", "items": {"type": "string"}, "description": "Aggregate limits."},
+                "rules": {"type": "array", "items": {"type": "string"}, "description": "Cross-slot rules."},
+                "formulas": {"type": "array", "items": {"type": "string"}, "description": "Derived formulas."},
+                "where": {"type": "array", "items": {"type": "string"}, "description": "Row filters."},
+                "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy."},
+                "weight_delta": {"type": "number", "description": "Relative weight perturbation (default: 0.15)."},
+                "limit_delta": {"type": "number", "description": "Relative limit perturbation (default: 0.10)."},
+            },
         },
     },
 ]
@@ -438,6 +465,7 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             where=merged["where"],
             top_n=int(args.get("top_n", 10)),
             norm=merged.get("norm") or "robust",
+            exclude=args.get("exclude"),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -460,6 +488,8 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             max_per_item=int(args.get("max_per_item", 1)),
             qty_field=args.get("qty_field"),
             norm=merged.get("norm") or "robust",
+            pin=args.get("pin"),
+            exclude=args.get("exclude"),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -479,6 +509,8 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 top_n=args.get("top_n"),
                 norm_override=args.get("norm"),
                 diverse_override=args.get("diverse") if "diverse" in args else None,
+                pin_override=args.get("pin"),
+                exclude_override=args.get("exclude"),
             )
 
         slot_pools: Dict[str, List[Dict[str, Any]]] = {}
@@ -514,10 +546,59 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             top_n=int(args.get("top_n", 5)),
             norm=merged.get("norm") or "robust",
             diverse=bool(merged.get("diverse", False)),
+            pin=args.get("pin"),
+            exclude=args.get("exclude"),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
         return {"meta": meta, "solutions": [s.to_dict() for s in sols]}
+
+    if name == "knapset_sensitivity":
+        if args.get("preset") and not args.get("source"):
+            cfg = resolve_preset(str(args["preset"]))
+            return cfg.sensitivity(
+                profile_name=args.get("profile"),
+                mode_override=args.get("mode") or None,
+                prefer_override=args.get("weights") or None,
+                limits_override=args.get("limits") or None,
+                where_override=args.get("where") or None,
+                formulas_override=args.get("formulas") or None,
+                rules_override=args.get("rules") or None,
+                norm_override=args.get("norm"),
+                weight_delta=float(args.get("weight_delta", 0.15)),
+                limit_delta=float(args.get("limit_delta", 0.10)),
+            )
+        if not args.get("source"):
+            raise ValueError("Provide 'preset' or 'source' for knapset_sensitivity.")
+        src = open_source(str(args["source"]))
+        schema = src.inspect()
+        eff_mode = str(args.get("mode") or ("solve" if len(schema.table_names()) > 1 and not args.get("table") else "rank")).lower()
+        if eff_mode == "solve":
+            pools = {t: src.load_rows(table=t) for t in schema.table_names()}
+            return analyze_sensitivity(
+                "solve",
+                slot_pools=pools,
+                weights=args.get("weights") or "",
+                limits=args.get("limits"),
+                rules=args.get("rules"),
+                formulas=args.get("formulas"),
+                where=args.get("where"),
+                norm=args.get("norm") or "robust",
+                weight_delta=float(args.get("weight_delta", 0.15)),
+                limit_delta=float(args.get("limit_delta", 0.10)),
+            )
+        rows = src.load_rows(table=args.get("table"))
+        return analyze_sensitivity(
+            eff_mode,
+            rows=rows,
+            weights=args.get("weights") or "",
+            limits=args.get("limits"),
+            formulas=args.get("formulas"),
+            where=args.get("where"),
+            norm=args.get("norm") or "robust",
+            weight_delta=float(args.get("weight_delta", 0.15)),
+            limit_delta=float(args.get("limit_delta", 0.10)),
+        )
 
     raise KeyError(f"Unknown MCP tool: {name}")
 

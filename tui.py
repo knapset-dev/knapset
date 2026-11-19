@@ -37,7 +37,7 @@ from preset_loader import (
     save_preset,
     save_shared_profile,
 )
-from solver_engine import solve_basket, solve_rank, solve_sets
+from solver_engine import analyze_sensitivity, solve_basket, solve_rank, solve_sets
 from sources.registry import open_source
 from theme_config import ThemeConfig, discover_themes, load_active_theme, set_active_theme
 
@@ -244,6 +244,8 @@ class TuiSessionState:
     top_n: int = 8
     norm: str = "robust"
     diverse: bool = False
+    pins: Dict[str, str] = field(default_factory=dict)
+    excludes: List[str] = field(default_factory=list)
     explain: bool = False
     dirty: bool = False
 
@@ -852,6 +854,8 @@ class TuiSessionState:
             "top_n": self.top_n,
             "norm": self.norm,
             "diverse": self.diverse,
+            "pins": dict(self.pins),
+            "excludes": list(self.excludes),
         }
 
     @staticmethod
@@ -862,6 +866,8 @@ class TuiSessionState:
         mode = snap["mode"]
         norm = snap.get("norm", "robust")
         diverse = bool(snap.get("diverse", False))
+        pins = snap.get("pins") or None
+        excludes = snap.get("excludes") or None
         if mode == "rank":
             first_rows = next(iter(slot_pools.values()), [])
             ranked, meta = solve_rank(
@@ -871,10 +877,12 @@ class TuiSessionState:
                 where=snap["where"],
                 top_n=max(10, snap["top_n"]),
                 norm=norm,
+                exclude=excludes,
             )
             return [r.to_dict() for r in ranked], meta
         if mode == "basket":
             first_rows = next(iter(slot_pools.values()), [])
+            pin_list = list(pins.values()) if isinstance(pins, dict) else pins
             sols, meta = solve_basket(
                 rows=first_rows,
                 weights=snap["weight_map"],
@@ -883,6 +891,8 @@ class TuiSessionState:
                 where=snap["where"],
                 top_n=snap["top_n"],
                 norm=norm,
+                pin=pin_list,
+                exclude=excludes,
             )
             return [s.to_dict() for s in sols], meta
         sols, meta = solve_sets(
@@ -896,8 +906,50 @@ class TuiSessionState:
             should_abort=should_abort,
             norm=norm,
             diverse=diverse,
+            pin=pins,
+            exclude=excludes,
         )
         return [s.to_dict() for s in sols], meta
+
+    def pin_slot(self, slot: str, needle: str) -> None:
+        self.pins[slot.strip()] = needle.strip()
+        self.dirty = True
+        self.re_solve()
+        self.status_message = f"Pinned {slot}={needle}"
+
+    def exclude_item(self, needle: str) -> None:
+        clean = needle.strip()
+        if clean and clean not in self.excludes:
+            self.excludes.append(clean)
+            self.dirty = True
+            self.re_solve()
+            self.status_message = f"Excluded '{clean}'"
+
+    def clear_pins_and_excludes(self) -> None:
+        self.pins.clear()
+        self.excludes.clear()
+        self.re_solve()
+        self.status_message = "Cleared all pins and excludes."
+
+    def run_sensitivity(self, weight_delta: float = 0.15, limit_delta: float = 0.10) -> Dict[str, Any]:
+        snap = self.capture_solve_inputs()
+        pools = snap["slot_pools"]
+        first_rows = next(iter(pools.values()), [])
+        return analyze_sensitivity(
+            snap["mode"],
+            rows=first_rows if snap["mode"] in ("rank", "basket") else None,
+            slot_pools=pools if snap["mode"] == "solve" else None,
+            weights=snap["weight_map"],
+            limits=snap["limits"],
+            rules=snap["rules"],
+            formulas=snap["formulas"],
+            where=snap["where"],
+            norm=snap["norm"],
+            weight_delta=weight_delta,
+            limit_delta=limit_delta,
+            pin=snap["pins"] or None,
+            exclude=snap["excludes"] or None,
+        )
 
     def re_solve(self) -> None:
         try:

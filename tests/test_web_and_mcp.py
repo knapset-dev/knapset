@@ -107,6 +107,13 @@ class TestV2WebAndMCP(unittest.TestCase):
 
                     reg = _http_json(f"http://127.0.0.1:{port}/api/registry?q=pc_build")
                     self.assertTrue(any(m["name"] == "pc_build" for m in reg.get("modules", [])))
+
+                    sens = _http_json(
+                        f"http://127.0.0.1:{port}/api/sensitivity",
+                        {"source": str(csv_path), "mode": "rank", "weights": "score:+0.4, price:-0.6"},
+                    )
+                    self.assertEqual(sens["baseline"]["label"], "RTX 4070")
+                    self.assertGreaterEqual(sens["stability_pct"], 0.0)
         finally:
             server.shutdown()
             server.server_close()
@@ -121,7 +128,7 @@ class TestV2WebAndMCP(unittest.TestCase):
 
         tools_resp = handle_jsonrpc_message({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
         assert tools_resp is not None
-        self.assertEqual(len(tools_resp["result"]["tools"]), 8)
+        self.assertEqual(len(tools_resp["result"]["tools"]), 9)
 
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -274,6 +281,22 @@ class TestV2WebAndMCP(unittest.TestCase):
                 assert theme_use_call is not None
                 self.assertFalse(theme_use_call["result"]["isError"])
                 self.assertEqual(json.loads(theme_use_call["result"]["content"][0]["text"])["active"], "agy-dark")
+
+                sens_call = handle_jsonrpc_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 12,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "knapset_sensitivity",
+                            "arguments": {"source": str(items_csv), "mode": "rank", "weights": "protein:+0.7, price:-0.3"},
+                        },
+                    }
+                )
+                assert sens_call is not None
+                self.assertFalse(sens_call["result"]["isError"])
+                sens_data = json.loads(sens_call["result"]["content"][0]["text"])
+                self.assertIsNotNone(sens_data["baseline"])
 
 
 if __name__ == "__main__":
