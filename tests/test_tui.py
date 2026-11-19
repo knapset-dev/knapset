@@ -365,6 +365,36 @@ class TestSharedProfiles(unittest.TestCase):
         self.assertEqual(suggested["gpu.vram_gb"], 0.5)
         self.assertEqual(suggested["psu.wattage"], 0.5)
 
+    def test_weight_trash_remove_restore_and_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "items.csv"
+            p.write_text("name,price,score\nA,10,50\nB,20,90\n", encoding="utf-8")
+            s = TuiSessionState()
+            s.load_from_source(str(p), mode="rank")
+            s._set_weights_from_pairs([("score", 0.7), ("price", -0.3)])
+
+            s.remove_weight(1)  # removes `price` (-0.3 -> min)
+            self.assertEqual([w[0] for w in s.weights], ["score"])
+            self.assertEqual(s.deleted_weights, [("price", 0.3, "min")])
+            ws = _build_workspace_items(s)
+            self.assertTrue(any(it.action_id == "weight_trash" for it in ws))
+
+            restored = s.restore_deleted_weight()
+            self.assertEqual(restored, "price")
+            self.assertEqual(s.deleted_weights, [])
+            self.assertEqual(s.weight_dirs["price"], "min")
+            self.assertEqual(dict(s.weights)["price"], 0.3)
+
+            s.remove_weight(0)
+            s.remove_weight(0)
+            self.assertEqual(len(s.deleted_weights), 2)
+            self.assertEqual(s.restore_all_deleted_weights(), 2)
+            self.assertEqual(len(s.weights), 2)
+
+            s.remove_weight(0)
+            self.assertEqual(s.empty_weight_trash(), 1)
+            self.assertEqual(s.deleted_weights, [])
+
 
 if __name__ == "__main__":
     unittest.main()

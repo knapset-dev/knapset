@@ -234,6 +234,7 @@ class TuiSessionState:
     base_dir: Path = field(default_factory=Path.cwd)
     weights: List[Tuple[str, float]] = field(default_factory=list)
     weight_dirs: Dict[str, str] = field(default_factory=dict)  # expr -> "max" | "min"
+    deleted_weights: List[Tuple[str, float, str]] = field(default_factory=list)  # trash stack: (expr, mag, dir)
     formulas: List[str] = field(default_factory=list)
     where: List[str] = field(default_factory=list)
     limits: List[str] = field(default_factory=list)
@@ -395,6 +396,7 @@ class TuiSessionState:
         self.saved_profiles = {k: dict(v) for k, v in cfg.profiles.items()}
 
         prof_key, prof_data = cfg.resolve_profile(profile_name)
+        self.deleted_weights.clear()
         self._apply_profile_dict(prof_key, prof_data, cfg=cfg)
         self.dirty = False
 
@@ -419,6 +421,7 @@ class TuiSessionState:
         self.preset_name = p.stem.lower().replace(" ", "_")
         self.title = f"{p.name}"
         self.profile = "default"
+        self.deleted_weights.clear()
 
         tbl_names = [table] if table else schema.table_names()
         eff_mode = mode or ("solve" if len(tbl_names) > 1 else "rank")
@@ -641,12 +644,56 @@ class TuiSessionState:
         self.re_solve()
         self.status_message = f"Updated weight: '{old_expr}' -> '{clean}'"
 
-    def remove_weight(self, idx: int) -> None:
+    def remove_weight(self, idx: int, auto_solve: bool = True) -> None:
         if 0 <= idx < len(self.weights):
-            removed = self.weights.pop(idx)
+            expr, raw_v = self.weights.pop(idx)
+            direction = self.weight_dirs.get(expr, "min" if raw_v < 0 else "max")
+            self.deleted_weights = [item for item in self.deleted_weights if item[0] != expr]
+            self.deleted_weights.append((expr, round(abs(raw_v), 2), direction))
+            if len(self.deleted_weights) > 50:
+                self.deleted_weights = self.deleted_weights[-50:]
             self.dirty = True
+            if auto_solve:
+                self.re_solve()
+            self.status_message = f"Moved '{expr}' to Weight Trash (press 'u' or open Trash to restore)."
+
+    def restore_deleted_weight(self, trash_idx: int = -1, auto_solve: bool = True) -> str:
+        if not self.deleted_weights:
+            self.status_message = "Weight Trash is empty."
+            return ""
+        idx = trash_idx if trash_idx >= 0 else (len(self.deleted_weights) + trash_idx)
+        if idx < 0 or idx >= len(self.deleted_weights):
+            raise IndexError("Trash index out of range.")
+        expr, mag, direction = self.deleted_weights.pop(idx)
+        self.weight_dirs[expr] = direction
+        existing = next((i for i, (k, _) in enumerate(self.weights) if k == expr), None)
+        if existing is not None:
+            self.weights[existing] = (expr, round(min(1.0, abs(mag)), 2))
+        else:
+            self.weights.append((expr, round(min(1.0, abs(mag)), 2)))
+        self.dirty = True
+        if auto_solve:
             self.re_solve()
-            self.status_message = f"Removed weight '{removed[0]}'."
+        self.status_message = f"Restored '{expr}' ({mag:.2f} {'↓ min' if direction == 'min' else '↑ max'})."
+        return expr
+
+    def restore_all_deleted_weights(self, auto_solve: bool = True) -> int:
+        count = len(self.deleted_weights)
+        if count == 0:
+            self.status_message = "Weight Trash is empty."
+            return 0
+        while self.deleted_weights:
+            self.restore_deleted_weight(0, auto_solve=False)
+        if auto_solve:
+            self.re_solve()
+        self.status_message = f"Restored {count} weight(s) from Trash."
+        return count
+
+    def empty_weight_trash(self) -> int:
+        count = len(self.deleted_weights)
+        self.deleted_weights.clear()
+        self.status_message = f"Emptied {count} weight(s) from Trash." if count else "Weight Trash is empty."
+        return count
 
     def add_formula(self, formula_expr: str) -> None:
         parse_formulas([formula_expr])
@@ -1047,6 +1094,16 @@ def _build_workspace_items(
     else:
         items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  (no weights yet — press Enter to add)", tone="muted"))
     items.append(_WorkspaceItem(kind="action", action_id="add_weight", label="  + Add Weight / Ratio Expression...", tone="accent"))
+    if state.deleted_weights:
+        n_del = len(state.deleted_weights)
+        items.append(
+            _WorkspaceItem(
+                kind="action",
+                action_id="weight_trash",
+                label=f"  🗑 Weight Trash ({n_del} deleted · Enter: pick · u: undo)",
+                tone="min",
+            )
+        )
 
     items.append(_WorkspaceItem(kind="header", label="SAVED PREFERENCES  (Enter: hop · s: save · d: del)", tone="accent"))
     if state.saved_profiles:
@@ -1713,6 +1770,31 @@ def run_curses_tui(state: TuiSessionState) -> None:
             _apply_curses_theme(active_theme)
             state.status_message = f"Theme: {active_theme.name} ({active_theme.title})"
 
+    def _action_weight_trash(scr: Any) -> bool:
+        """Opens the Weight Trash picker to restore one, restore all, or empty trash. Returns True if weights changed."""
+        if not state.deleted_weights:
+            state.status_message = "Weight Trash is empty."
+            return False
+        rev = list(reversed(state.deleted_weights))
+        choices: List[Tuple[str, str]] = [
+            (expr, f"{mag:.2f} {'↓ min' if d == 'min' else '↑ max'} — restore")
+            for expr, mag, d in rev
+        ]
+        choices.append(("↺ Restore ALL deleted weights", f"bring back all {len(rev)} parameter(s)"))
+        choices.append(("✕ Empty Weight Trash", "permanently clear trash list"))
+        pick = _modal_picker(scr, "🗑 Weight Trash (Restore Deleted Weights)", choices)
+        if pick is None:
+            return False
+        if pick == len(rev):
+            state.restore_all_deleted_weights(auto_solve=False)
+            return True
+        if pick == len(rev) + 1:
+            state.empty_weight_trash()
+            return False
+        orig_idx = len(state.deleted_weights) - 1 - pick
+        state.restore_deleted_weight(orig_idx, auto_solve=False)
+        return True
+
     def _action_command_palette(stdscr: Any) -> None:
         cmds = [
             ("/open", "Open / Replace Main SQLite / CSV / JSON database"),
@@ -1722,6 +1804,7 @@ def run_curses_tui(state: TuiSessionState) -> None:
             ("/profiles", "Apply a saved preference (from shared library or a file) to this DB"),
             ("/preset", "Load a saved preset file or installed registry preset"),
             ("/weight", "Add a weighted column or ratio expression"),
+            ("/trash", f"Open Weight Trash ({len(state.deleted_weights)} deleted weight(s))"),
             ("/formula", "Create a new formula using available DB fields"),
             ("/rule", "Add constraint (Rule / Limit / Filter)"),
             ("/mode", "Switch optimization mode (solve / basket / rank)"),
@@ -1748,6 +1831,9 @@ def run_curses_tui(state: TuiSessionState) -> None:
             _action_pick_preset(stdscr)
         elif cmd == "/weight":
             _action_add_weight(stdscr)
+        elif cmd == "/trash":
+            if _action_weight_trash(stdscr):
+                state.re_solve()
         elif cmd in ("/formula", "/rule"):
             _action_add_constraint(stdscr)
         elif cmd == "/mode":
@@ -2049,6 +2135,19 @@ def run_curses_tui(state: TuiSessionState) -> None:
             if ch == curses.KEY_RESIZE:
                 force_clear = True
                 continue
+            if ch == 27:
+                # Drain any unmapped CSI/SS3 escape sequence (e.g. Ctrl+Shift+Left `\x1b[1;6D`) so final 'D'/'A' never fires shortcuts
+                try:
+                    stdscr.nodelay(True)
+                    nxt = stdscr.getch()
+                    if nxt in (ord("["), ord("O")):
+                        for _ in range(16):
+                            b = stdscr.getch()
+                            if b == curses.ERR or 0x40 <= b <= 0x7E:
+                                break
+                finally:
+                    stdscr.nodelay(False)
+                continue
             if ch in (ord("q"), ord("Q")):
                 break
             if ch == 9:
@@ -2090,6 +2189,13 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 _flush_pending_solve()
                 _action_load_profile(stdscr)
                 force_clear = True
+                continue
+            if ch in (ord("u"), ord("U")):
+                if state.deleted_weights:
+                    state.restore_deleted_weight(-1, auto_solve=False)
+                    _schedule_solve(immediate=True)
+                else:
+                    state.status_message = "Weight Trash is empty."
                 continue
 
             if ch == curses.KEY_MOUSE:
@@ -2212,31 +2318,36 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     state.toggle_weight_direction(ws_items[left_cursor].index, auto_solve=False)
                     _schedule_solve()
             elif ch in (ord("d"), ord("D"), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
-                solve_gen += 1
-                solve_pending = False
-                worker_running = False
                 cur = ws_items[left_cursor]
                 if cur.kind == "weight":
-                    state.remove_weight(cur.index)
+                    state.remove_weight(cur.index, auto_solve=False)
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "profile":
-                    state.delete_preference_profile(cur.key)
+                    state.delete_preference_profile(cur.key, auto_solve=False)
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "slot":
+                    solve_gen += 1
+                    solve_pending = False
+                    worker_running = False
                     state.remove_slot(cur.key)
                 elif cur.kind == "ref":
+                    solve_gen += 1
+                    solve_pending = False
+                    worker_running = False
                     state.detach_reference(cur.key)
                 elif cur.kind == "limit" and 0 <= cur.index < len(state.limits):
                     state.limits.pop(cur.index)
-                    state.re_solve()
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "rule" and 0 <= cur.index < len(state.rules):
                     state.rules.pop(cur.index)
-                    state.re_solve()
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "formula" and 0 <= cur.index < len(state.formulas):
                     state.formulas.pop(cur.index)
                     state._rebuild_columns_and_pools()
-                    state.re_solve()
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "where" and 0 <= cur.index < len(state.where):
                     state.where.pop(cur.index)
-                    state.re_solve()
+                    _schedule_solve(immediate=True)
             elif ch in (ord("a"), ord("A")):
                 solve_gen += 1
                 solve_pending = False
@@ -2254,6 +2365,10 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 cur = ws_items[left_cursor]
                 if cur.action_id == "add_weight":
                     _action_add_weight(stdscr)
+                    force_clear = True
+                elif cur.action_id == "weight_trash":
+                    if _action_weight_trash(stdscr):
+                        _schedule_solve(immediate=True)
                     force_clear = True
                 elif cur.action_id == "save_profile":
                     _action_save_preference(stdscr)
