@@ -187,14 +187,30 @@ def _render_result_lines(state: TuiSessionState, max_width: int) -> List[str]:
         return [ln[:max_width] for ln in lines]
 
     if not state.results:
-        lines.extend(
-            [
-                "No combinations satisfy all active rules & limits.",
-                "",
-                "Try relaxing a Limit (e.g. budget) or removing a strict Rule.",
-            ]
-        )
+        diag = state.meta.get("diagnostics") if isinstance(state.meta, dict) else None
+        if isinstance(diag, dict) and diag.get("reasons"):
+            lines.append("No feasible results:")
+            lines.append("")
+            for r in diag["reasons"][:4]:
+                lines.append(f"  • {r}")
+        else:
+            lines.extend(
+                [
+                    "No combinations satisfy all active rules & limits.",
+                    "",
+                    "Try relaxing a Limit (e.g. budget) or removing a strict Rule.",
+                ]
+            )
         return [ln[:max_width] for ln in lines]
+
+    header_tags = [f"norm={state.norm}"]
+    if state.diverse and state.mode == "solve":
+        header_tags.append("diverse")
+    if state.pins:
+        header_tags.append(f"pins={len(state.pins)}")
+    if state.excludes:
+        header_tags.append(f"excl={len(state.excludes)}")
+    lines.append(f"  [{' · '.join(header_tags)}]"[:max_width])
 
     card_w = max(24, max_width - 1)
     inner_w = card_w - 4

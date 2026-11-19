@@ -395,6 +395,25 @@ class TestSharedProfiles(unittest.TestCase):
             self.assertEqual(s.empty_weight_trash(), 1)
             self.assertEqual(s.deleted_weights, [])
 
+    def test_tui_diagnostics_render_and_pin_exclude_sensitivity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "items.csv"
+            p.write_text("name,price,score\nA,100,80\nB,200,95\n", encoding="utf-8")
+            s = TuiSessionState()
+            s.load_from_source(str(p), mode="rank")
+            s.exclude_item("B")
+            self.assertEqual(s.results[0]["row"]["name"], "A")
+            lines_ok = _render_result_lines(s, 72)
+            self.assertIn("norm=robust", lines_ok[0])
+            self.assertIn("excl=1", lines_ok[0])
+
+            rep = s.run_sensitivity()
+            self.assertEqual(rep["baseline"]["label"], "A")
+
+            s.add_where("price < 10")
+            lines_empty = _render_result_lines(s, 72)
+            self.assertTrue(any("price < 10" in ln for ln in lines_empty))
+
 
 if __name__ == "__main__":
     unittest.main()

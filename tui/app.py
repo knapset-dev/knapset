@@ -598,6 +598,54 @@ def run_curses_tui(state: TuiSessionState) -> None:
         state.restore_deleted_weight(orig_idx, auto_solve=False)
         return True
 
+    def _action_cycle_norm() -> None:
+        order = ("robust", "minmax", "rank")
+        nxt = order[(order.index(state.norm) + 1) % len(order)] if state.norm in order else "robust"
+        state.norm = nxt
+        state.re_solve()
+        state.status_message = f"Normalization: {nxt}"
+
+    def _action_pin_prompt(stdscr: Any) -> None:
+        if state.mode == "solve" and state.slot_pools:
+            slots = list(state.slot_pools.keys())
+            pick = _modal_picker(stdscr, "Pin Item to Slot", [(s, state.pins.get(s, "(unpinned)")) for s in slots])
+            if pick is None:
+                return
+            slot = slots[pick]
+            val = _modal_text_input(stdscr, f"Pin {slot}", "Item name / ID substring:", initial=state.pins.get(slot, ""))
+            if val:
+                state.pin_slot(slot, val)
+        else:
+            val = _modal_text_input(stdscr, "Pin Item", "Item name / ID substring:")
+            if val:
+                state.pin_slot("item", val)
+
+    def _action_exclude_prompt(stdscr: Any) -> None:
+        val = _modal_text_input(stdscr, "Exclude Item", "Pattern ('name' or 'slot:name'):")
+        if val:
+            state.exclude_item(val)
+
+    def _action_sensitivity_modal(stdscr: Any) -> None:
+        try:
+            rep = state.run_sensitivity()
+        except Exception as exc:
+            state.status_message = f"Sensitivity error: {exc}"
+            return
+        base = rep.get("baseline")
+        if not base:
+            _modal_picker(stdscr, "Sensitivity Analysis", [("No baseline", "No feasible solution found.")])
+            return
+        rows: List[Tuple[str, str]] = [
+            ("Baseline #1", f"[{base['score']}] {base['label']}"),
+            ("Stability", f"{rep.get('stability_pct', 0.0):.1f}% under ±15% weight shifts"),
+        ]
+        if rep.get("closest_challenger"):
+            rows.append(("Challenger", str(rep["closest_challenger"])))
+        for lp in rep.get("limit_perturbations") or []:
+            delta_s = f"{lp['score_delta']:+.1f}" if lp.get("score_delta") is not None else "infeasible"
+            rows.append((lp["adjusted_limit"], f"score {lp['score']} ({delta_s})"))
+        _modal_picker(stdscr, "Sensitivity & Stability Report", rows, hint="Press Esc or Enter to close")
+
     def _action_command_palette(stdscr: Any) -> None:
         cmds = [
             ("/open", "Open / Replace Main SQLite / CSV / JSON database"),
@@ -611,6 +659,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
             ("/formula", "Create a new formula using available DB fields"),
             ("/rule", "Add constraint (Rule / Limit / Filter)"),
             ("/mode", "Switch optimization mode (solve / basket / rank)"),
+            ("/norm", f"Cycle normalization mode (current: {state.norm})"),
+            ("/diverse", f"Toggle diverse Top-N sets (current: {'ON' if state.diverse else 'OFF'})"),
+            ("/pin", "Pin an item to a slot/basket"),
+            ("/exclude", "Exclude an item pattern"),
+            ("/clear-pins", "Clear all active pins & excludes"),
+            ("/sensitivity", "Check #1 winner stability & budget shadow gains"),
             ("/explain", "Toggle normalized score breakdown"),
             ("/theme", "Switch active UI theme (`configs/theme.json`)"),
             ("/export", "Export preset to custom .json path"),
@@ -641,6 +695,20 @@ def run_curses_tui(state: TuiSessionState) -> None:
             _action_add_constraint(stdscr)
         elif cmd == "/mode":
             state.cycle_mode()
+        elif cmd == "/norm":
+            _action_cycle_norm()
+        elif cmd == "/diverse":
+            state.diverse = not state.diverse
+            state.re_solve()
+            state.status_message = f"Diverse Top-N sets: {'ON' if state.diverse else 'OFF'}"
+        elif cmd == "/pin":
+            _action_pin_prompt(stdscr)
+        elif cmd == "/exclude":
+            _action_exclude_prompt(stdscr)
+        elif cmd == "/clear-pins":
+            state.clear_pins_and_excludes()
+        elif cmd == "/sensitivity":
+            _action_sensitivity_modal(stdscr)
         elif cmd == "/explain":
             state.explain = not state.explain
             state.status_message = f"Explain breakdown: {'ON' if state.explain else 'OFF'}"
@@ -662,8 +730,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     ("← / → or - / +", "Adjust weight (-0.10 / +0.10; [ / ] for ±0.05)"),
                     ("Enter", "Hop profile / Repick DB slot / Open '+ Add' composer"),
                     ("d / Backspace", "Delete weight, profile, formula, limit, rule, DB slot, or Ref DB"),
-                    ("s / l / h", "Save preferences to shared library / Load saved preferences (library or file) / Hop profile"),
-                    ("o / p / m / e", "Open Main DB / Preset picker / Cycle Mode / Explain toggle"),
+                    ("s / l / h", "Save preferences to shared library / Load saved preferences / Hop profile"),
+                    ("o / p / m / n / x / e", "Open DB / Preset / Cycle Mode / Cycle Norm / Exclude / Explain"),
                     ("Tab / /", "Switch Config<->Results pane / Open Command Palette"),
                     ("q", "Quit TUI"),
                 ],
@@ -978,6 +1046,15 @@ def run_curses_tui(state: TuiSessionState) -> None:
             if ch in (ord("m"), ord("M")):
                 state.cycle_mode(auto_solve=False)
                 _schedule_solve(immediate=True)
+                continue
+            if ch in (ord("n"), ord("N")):
+                _flush_pending_solve()
+                _action_cycle_norm()
+                continue
+            if ch in (ord("x"), ord("X")):
+                _flush_pending_solve()
+                _action_exclude_prompt(stdscr)
+                force_clear = True
                 continue
             if ch in (ord("e"), ord("E")):
                 state.explain = not state.explain
