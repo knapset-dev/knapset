@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import LimitSpec, RuleSpec, SafeExpression, _SAFE_FUNCS, _extract_attr_chain, parse_formulas, parse_weights
+from formula_engine import LimitSpec, RuleSpec, SafeExpression, _SAFE_FUNCS, _extract_attr_chain, filter_rows, parse_formulas, parse_weights
 from preset_loader import (
     PresetConfig,
     discover_presets,
@@ -363,6 +363,11 @@ class TuiSessionState:
                 )
                 rows = enr.rows
                 self.ref_stats[ref_key] = f"{enr.matched}/{enr.total} ({enr.match_rate * 100:.0f}%)"
+
+            slot_where = s_cfg.get("where")
+            if slot_where:
+                clauses = [str(w) for w in slot_where] if isinstance(slot_where, (list, tuple)) else [str(slot_where)]
+                rows = filter_rows(rows, clauses)
 
             pools[slot_name] = rows
             prefix = f"{slot_name}." if len(self.sources) > 1 else ""

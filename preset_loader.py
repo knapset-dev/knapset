@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover
 
 from app_paths import REPO_ROOT, get_config_dir, get_data_dir, get_plugins_root
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import parse_weights
+from formula_engine import filter_rows, parse_weights
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.base import BaseDataSource
 from sources.registry import get_source_registry, open_source
@@ -320,6 +320,11 @@ class PresetConfig:
 
             for norm in loaded_plugins.normalizers:
                 rows = norm.normalize(slot_name, rows)
+
+            slot_where = slot_cfg.get("where")
+            if slot_where:
+                clauses = [str(w) for w in slot_where] if isinstance(slot_where, (list, tuple)) else [str(slot_where)]
+                rows = filter_rows(rows, clauses)
 
             slot_pools[slot_name] = rows
 

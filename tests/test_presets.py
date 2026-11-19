@@ -231,6 +231,28 @@ class TestPresetCLIAndRegistry(unittest.TestCase):
         self.assertGreaterEqual(top_fish["slots"]["lure"]["weight_g"], top_fish["slots"]["rod"]["cast_min_g"])
         self.assertLessEqual(top_fish["slots"]["lure"]["weight_g"], top_fish["slots"]["rod"]["cast_max_g"])
 
+    def test_per_slot_where_filters_source_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            items = root / "items.csv"
+            items.write_text("name,score,price,flag\nBad,99,10,1\nGood,70,20,0\n", encoding="utf-8")
+            pfile = root / "p.json"
+            pfile.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "2.0",
+                        "name": "slot_where_test",
+                        "mode": "rank",
+                        "sources": {"items": {"source": str(items), "where": "flag == 0"}},
+                        "profiles": {"std": {"weights": {"score": 1.0}}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            res = PresetConfig.from_dict(json.loads(pfile.read_text(encoding="utf-8")), source_path=pfile).execute()
+            self.assertEqual(len(res["results"]), 1)
+            self.assertEqual(res["results"][0]["row"]["name"], "Good")
+
 
 if __name__ == "__main__":
     unittest.main()
