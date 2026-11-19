@@ -12,6 +12,7 @@ Supports:
 from __future__ import annotations
 
 import ast
+import difflib
 import math
 import operator
 import re
@@ -85,6 +86,42 @@ def _safe_log(val: Any, base: Any = math.e) -> float:
     return math.log(v, float(base))
 
 
+def _safe_if_else(cond: Any, when_true: Any, when_false: Any) -> Any:
+    return when_true if bool(cond) else when_false
+
+
+def _safe_startswith(val: Any, prefix: Any) -> bool:
+    if val is None or prefix is None:
+        return False
+    return str(val).lower().startswith(str(prefix).lower())
+
+
+def _safe_endswith(val: Any, suffix: Any) -> bool:
+    if val is None or suffix is None:
+        return False
+    return str(val).lower().endswith(str(suffix).lower())
+
+
+def _safe_pct_diff(a: Any, b: Any) -> Optional[float]:
+    na, nb = to_number(a), to_number(b)
+    if na is None or nb is None or nb == 0.0:
+        return None
+    return ((na - nb) / abs(nb)) * 100.0
+
+
+def _safe_regex_match(text: Any, pattern: Any) -> bool:
+    if text is None or pattern is None:
+        return False
+    return re.search(str(pattern), str(text), re.IGNORECASE) is not None
+
+
+def suggest_columns(missing: str, candidates: Sequence[str], n: int = 3) -> List[str]:
+    """Suggests close column names for clearer expression/diagnostic hints."""
+    if not missing or not candidates:
+        return []
+    return difflib.get_close_matches(str(missing), [str(c) for c in candidates], n=n, cutoff=0.5)
+
+
 _SAFE_FUNCS: Dict[str, Callable[..., Any]] = {
     "min": min,
     "max": max,
@@ -100,6 +137,11 @@ _SAFE_FUNCS: Dict[str, Callable[..., Any]] = {
     "clamp": _safe_clamp,
     "coalesce": _safe_coalesce,
     "contains": _safe_contains,
+    "startswith": _safe_startswith,
+    "endswith": _safe_endswith,
+    "regex_match": _safe_regex_match,
+    "if_else": _safe_if_else,
+    "pct_diff": _safe_pct_diff,
     "lower": _safe_lower,
     "upper": _safe_upper,
 }

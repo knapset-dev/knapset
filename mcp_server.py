@@ -115,6 +115,7 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "formulas": {"type": "array", "items": {"type": "string"}, "description": "Derived formulas e.g. ['deal = (ref.msrp - price) / ref.msrp']."},
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Filter predicates e.g. ['price <= 600']."},
                 "weights": {"type": "string", "description": "Signed weights e.g. 'ref.score:+0.7, price:-0.3'."},
+                "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
                 "top_n": {"type": "integer", "description": "Top items to return (default: 10)."},
             },
             "required": ["source"],
@@ -143,6 +144,7 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Optional row filters."},
                 "max_per_item": {"type": "integer", "description": "Max quantity per row (default: 1)."},
                 "qty_field": {"type": "string", "description": "Optional row field capping per-item quantity."},
+                "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
                 "top_n": {"type": "integer", "description": "Top basket solutions to return (default: 5)."},
             },
             "required": ["source"],
@@ -173,6 +175,8 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "rules": {"type": "array", "items": {"type": "string"}, "description": "Cross-slot AST rules e.g. ['cpu.socket == mobo.socket']."},
                 "formulas": {"type": "array", "items": {"type": "string"}, "description": "Optional derived formulas."},
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Optional filters."},
+                "norm": {"type": "string", "enum": ["robust", "minmax", "rank"], "description": "Normalization strategy (default: 'robust')."},
+                "diverse": {"type": "boolean", "description": "Diversify Top-N multi-slot combinations."},
                 "top_n": {"type": "integer", "description": "Top sets to return (default: 5)."},
             },
         },
@@ -433,6 +437,7 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             formulas=merged["formulas"],
             where=merged["where"],
             top_n=int(args.get("top_n", 10)),
+            norm=merged.get("norm") or "robust",
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -454,6 +459,7 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             top_n=int(args.get("top_n", 5)),
             max_per_item=int(args.get("max_per_item", 1)),
             qty_field=args.get("qty_field"),
+            norm=merged.get("norm") or "robust",
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -471,6 +477,8 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 formulas_override=args.get("formulas") or None,
                 rules_override=args.get("rules") or None,
                 top_n=args.get("top_n"),
+                norm_override=args.get("norm"),
+                diverse_override=args.get("diverse") if "diverse" in args else None,
             )
 
         slot_pools: Dict[str, List[Dict[str, Any]]] = {}
@@ -504,6 +512,8 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             formulas=merged["formulas"],
             where=merged["where"],
             top_n=int(args.get("top_n", 5)),
+            norm=merged.get("norm") or "robust",
+            diverse=bool(merged.get("diverse", False)),
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped

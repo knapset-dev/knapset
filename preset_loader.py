@@ -34,7 +34,7 @@ from formula_engine import (
     filter_rows,
     parse_weights,
 )
-from solver_engine import solve_basket, solve_rank, solve_sets
+from solver_engine import DEFAULT_NORM_MODE, solve_basket, solve_rank, solve_sets, validate_norm_mode
 from sources.base import BaseDataSource
 from sources.registry import get_source_registry, open_source
 
@@ -167,6 +167,8 @@ class PresetConfig:
     top_n: Optional[int] = None
     max_per_item: int = 1
     qty_field: Optional[str] = None
+    norm: str = DEFAULT_NORM_MODE
+    diverse: bool = False
     source_path: Optional[Path] = None
 
     @classmethod
@@ -203,6 +205,8 @@ class PresetConfig:
             top_n=int(data["top_n"]) if data.get("top_n") is not None else None,
             max_per_item=int(data.get("max_per_item", 1)),
             qty_field=data.get("qty_field"),
+            norm=validate_norm_mode(data.get("norm")),
+            diverse=bool(data.get("diverse", False)),
             source_path=source_path,
         )
 
@@ -233,6 +237,10 @@ class PresetConfig:
             payload["max_per_item"] = self.max_per_item
         if self.qty_field:
             payload["qty_field"] = self.qty_field
+        if self.norm != DEFAULT_NORM_MODE:
+            payload["norm"] = self.norm
+        if self.diverse:
+            payload["diverse"] = True
         return payload
 
     def profile_names(self) -> List[str]:
@@ -350,11 +358,15 @@ class PresetConfig:
         top_n: Optional[int] = None,
         source_overrides: Optional[Dict[str, str]] = None,
         slot_pools_override: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+        norm_override: Optional[str] = None,
+        diverse_override: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Executes the preset solver pipeline and returns serializable results + metadata."""
         plugins = self.load_plugins()
         prof_key, prof_data = self.resolve_profile(profile_name)
         eff_mode = (mode_override or prof_data.get("mode") or self.mode).lower().strip()
+        eff_norm = validate_norm_mode(norm_override or prof_data.get("norm") or self.norm)
+        eff_diverse = bool(self.diverse if diverse_override is None else diverse_override)
 
         # Merge weights cleanly (profile base weights overwritten per-term by --prefer)
         base_weights = dict(prof_data.get("weights") or {})
@@ -395,6 +407,7 @@ class PresetConfig:
                 formulas=merged_formulas,
                 where=merged_where,
                 top_n=eff_top,
+                norm=eff_norm,
             )
             results = [r.to_dict() for r in ranked]
         elif eff_mode == "basket":
@@ -408,6 +421,7 @@ class PresetConfig:
                 top_n=eff_top,
                 max_per_item=self.max_per_item,
                 qty_field=self.qty_field,
+                norm=eff_norm,
             )
             results = [s.to_dict() for s in sols]
         elif eff_mode == "solve":
@@ -419,6 +433,8 @@ class PresetConfig:
                 formulas=merged_formulas,
                 where=merged_where,
                 top_n=eff_top,
+                norm=eff_norm,
+                diverse=eff_diverse,
             )
             results = [s.to_dict() for s in sols]
         else:
@@ -439,6 +455,8 @@ class PresetConfig:
             "preset": self.name,
             "title": self.title,
             "mode": eff_mode,
+            "norm": eff_norm,
+            "diverse": eff_diverse,
             "profile": prof_key,
             "weights": base_weights,
             "limits": merged_limits,
@@ -496,7 +514,7 @@ def get_user_profiles_dir() -> Path:
 
 
 PROFILE_FILE_SCHEMA = "knapset-profile/1"
-_PROFILE_KEYS = ("mode", "weights", "formulas", "where", "limits", "rules")
+_PROFILE_KEYS = ("mode", "norm", "diverse", "weights", "formulas", "where", "limits", "rules")
 
 
 def _clean_profile_name(name: str) -> str:
@@ -684,6 +702,8 @@ def apply_profile_defaults(
     profile: Dict[str, Any],
     *,
     mode: Optional[str] = None,
+    norm: Optional[str] = None,
+    diverse: Optional[bool] = None,
     weights: Any = None,
     formulas: Any = None,
     where: Any = None,
@@ -693,6 +713,8 @@ def apply_profile_defaults(
     """Merges saved profile defaults with explicit request arguments (explicit values win)."""
     return {
         "mode": mode or profile.get("mode"),
+        "norm": norm or profile.get("norm"),
+        "diverse": profile.get("diverse", False) if diverse is None else bool(diverse),
         "weights": weights if weights else (profile.get("weights") or {}),
         "formulas": list(formulas) if formulas else list(profile.get("formulas") or []),
         "where": list(where) if where else list(profile.get("where") or []),
@@ -710,6 +732,8 @@ def resolve_prefs_for_pools(
     if not prefs_ref:
         return {
             "mode": args.get("mode"),
+            "norm": args.get("norm"),
+            "diverse": bool(args.get("diverse", False)),
             "weights": args.get("weights") or "",
             "formulas": args.get("formulas") or [],
             "where": args.get("where") or [],
@@ -722,6 +746,8 @@ def resolve_prefs_for_pools(
     merged = apply_profile_defaults(
         filtered_prof,
         mode=args.get("mode"),
+        norm=args.get("norm"),
+        diverse=args.get("diverse") if "diverse" in args else None,
         weights=args.get("weights"),
         formulas=args.get("formulas"),
         where=args.get("where"),

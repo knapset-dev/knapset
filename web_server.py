@@ -202,6 +202,22 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
         <input id="topN" type="number" value="5" min="1" max="50" />
       </div>
     </div>
+    <div class="row">
+      <div style="flex:1">
+        <label>Normalization</label>
+        <select id="normSelect">
+          <option value="robust">robust (P5-P95)</option>
+          <option value="minmax">minmax (0..1)</option>
+          <option value="rank">rank (percentile)</option>
+        </select>
+      </div>
+      <div style="flex:1;padding-top:20px;">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;">
+          <input id="diverseCheck" type="checkbox" style="width:auto;" />
+          <span>Diverse Top-N sets</span>
+        </label>
+      </div>
+    </div>
 
     <details id="refDetails">
       <summary>Reference DB Enrichment (<code>--ref</code> / Compare)</summary>
@@ -566,6 +582,8 @@ async function runSolve(prefsOverride) {
     source: src || undefined,
     table: document.getElementById('tableSelect').value || undefined,
     mode: document.getElementById('modeSelect').value,
+    norm: document.getElementById('normSelect').value,
+    diverse: document.getElementById('diverseCheck').checked,
     top_n: parseInt(document.getElementById('topN').value || '5', 10),
     weights: document.getElementById('weightsBox').value.trim(),
     formulas: splitLines('formulasBox'),
@@ -585,8 +603,10 @@ function renderResponse(res) {
   lastPayload = res;
   if (res.error) { setStatus(res.error, 'var(--red)'); return; }
   const skipped = (res.meta && res.meta.skipped_prefs_terms) ? ` (skipped missing cols: ${res.meta.skipped_prefs_terms.join(', ')})` : '';
-  setStatus(`Solved ${(res.results || []).length} result(s) in mode=${res.mode}.${skipped}`, 'var(--green)');
+  const diag = (res.meta && res.meta.diagnostics && res.meta.diagnostics.summary) ? ` — ${res.meta.diagnostics.summary}` : '';
+  setStatus(`Solved ${(res.results || []).length} result(s) in mode=${res.mode}.${skipped}${diag}`, (res.results || []).length ? 'var(--green)' : 'var(--warn)');
   const panel = document.getElementById('resultsPanel');
+  const emptyHtml = diag ? `<div class="result-card"><b>No feasible results</b><div style="margin-top:4px;color:var(--warn)">${esc(res.meta.diagnostics.summary)}</div></div>` : '<div>No feasible results found.</div>';
   panel.innerHTML = (res.results || []).map((r, i) => {
     const score = r.score ?? r.total_score ?? 0;
     const bdHtml = (r.breakdown || []).map(b => {
@@ -594,7 +614,7 @@ function renderResponse(res) {
       return `<span class="badge ${cls}">${esc(b.expression)}: raw=${esc(b.raw_value)} n=${b.normalized} w=${b.weight} (+${b.contribution})</span>`;
     }).join('');
     return `<div class="result-card"><div class="row" style="justify-content:space-between"><b>#${i+1}</b><span class="score-pill">${esc(score)}</span></div>${bdHtml ? `<div style="margin-top:6px">${bdHtml}</div>` : ''}<pre>${esc(JSON.stringify(r, null, 2))}</pre></div>`;
-  }).join('') || '<div>No feasible results found.</div>';
+  }).join('') || emptyHtml;
 }
 
 function downloadJson() {
@@ -675,6 +695,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             formulas_override=formulas or None,
             rules_override=rules or None,
             top_n=top_n,
+            norm_override=payload.get("norm"),
+            diverse_override=payload.get("diverse") if "diverse" in payload else None,
         )
 
     source_target = payload.get("source")
@@ -707,6 +729,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     merged, skipped = resolve_prefs_for_pools(payload, slot_pools)
     eff_mode = str(merged.get("mode") or mode or ("solve" if len(slot_pools) > 1 else "rank")).lower().strip()
+    eff_norm = str(merged.get("norm") or "robust")
+    eff_diverse = bool(merged.get("diverse", False))
     eff_weights = merged["weights"] or ""
     eff_formulas = merged["formulas"]
     eff_where = merged["where"]
@@ -715,7 +739,9 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     if eff_mode == "rank":
         first_rows = next(iter(slot_pools.values()), [])
-        ranked, meta = solve_rank(first_rows, weights=eff_weights, formulas=eff_formulas, where=eff_where, top_n=top_n)
+        ranked, meta = solve_rank(
+            first_rows, weights=eff_weights, formulas=eff_formulas, where=eff_where, top_n=top_n, norm=eff_norm
+        )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
         return {"mode": "rank", "meta": meta, "results": [r.to_dict() for r in ranked]}
@@ -730,6 +756,7 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
             top_n=top_n,
             max_per_item=int(payload.get("max_per_item", 1)),
             qty_field=payload.get("qty_field"),
+            norm=eff_norm,
         )
         if skipped:
             meta["skipped_prefs_terms"] = skipped
@@ -742,6 +769,8 @@ def _execute_solve_request(payload: Dict[str, Any]) -> Dict[str, Any]:
         formulas=eff_formulas,
         where=eff_where,
         top_n=top_n,
+        norm=eff_norm,
+        diverse=eff_diverse,
     )
     if skipped:
         meta["skipped_prefs_terms"] = skipped

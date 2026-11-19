@@ -242,6 +242,8 @@ class TuiSessionState:
     rules: List[str] = field(default_factory=list)
     saved_profiles: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     top_n: int = 8
+    norm: str = "robust"
+    diverse: bool = False
     explain: bool = False
     dirty: bool = False
 
@@ -848,6 +850,8 @@ class TuiSessionState:
             "formulas": list(self.formulas),
             "where": list(self.where),
             "top_n": self.top_n,
+            "norm": self.norm,
+            "diverse": self.diverse,
         }
 
     @staticmethod
@@ -856,6 +860,8 @@ class TuiSessionState:
         if not slot_pools:
             return [], {}
         mode = snap["mode"]
+        norm = snap.get("norm", "robust")
+        diverse = bool(snap.get("diverse", False))
         if mode == "rank":
             first_rows = next(iter(slot_pools.values()), [])
             ranked, meta = solve_rank(
@@ -864,6 +870,7 @@ class TuiSessionState:
                 formulas=snap["formulas"],
                 where=snap["where"],
                 top_n=max(10, snap["top_n"]),
+                norm=norm,
             )
             return [r.to_dict() for r in ranked], meta
         if mode == "basket":
@@ -875,6 +882,7 @@ class TuiSessionState:
                 formulas=snap["formulas"],
                 where=snap["where"],
                 top_n=snap["top_n"],
+                norm=norm,
             )
             return [s.to_dict() for s in sols], meta
         sols, meta = solve_sets(
@@ -886,6 +894,8 @@ class TuiSessionState:
             where=snap["where"],
             top_n=snap["top_n"],
             should_abort=should_abort,
+            norm=norm,
+            diverse=diverse,
         )
         return [s.to_dict() for s in sols], meta
 
@@ -894,6 +904,8 @@ class TuiSessionState:
             results, meta = self.run_solve_snapshot(self.capture_solve_inputs())
             self.results = results
             self.meta = meta
+            if not results and isinstance(meta.get("diagnostics"), dict) and meta["diagnostics"].get("summary"):
+                self.status_message = f"0 results: {meta['diagnostics']['summary']}"
         except Exception as exc:
             self.status_message = f"Check expression: {exc}"
 

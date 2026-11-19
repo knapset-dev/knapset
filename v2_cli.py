@@ -424,6 +424,7 @@ def _add_common_solve_flags(parser: argparse.ArgumentParser, default_top: int = 
     parser.add_argument("--where", "-w", action="append", default=[], help="Row filter expression, e.g. 'vram >= 12 and price <= 600'")
     parser.add_argument("--prefer", "-p", action="append", default=[], help="Signed weights, e.g. 'ref.score:+0.7,price:-0.3'")
     parser.add_argument("--prefs", default=None, help="Saved preference profile name (see `prefs list`) or profile/preset file; explicit flags override it")
+    parser.add_argument("--norm", choices=["robust", "minmax", "rank"], default=None, help="Normalization mode: robust (P5-P95 default), minmax, or rank")
     parser.add_argument("--top", "-n", type=int, default=default_top, help=f"Number of results to return (default: {default_top})")
     parser.add_argument("--explain", action="store_true", help="Print per-term normalized score breakdown")
     parser.add_argument("--json", action="store_true", help="Output structured JSON")
@@ -450,6 +451,19 @@ def _apply_prefs(args: argparse.Namespace) -> None:
     for attr, key in (("formula", "formulas"), ("where", "where"), ("limit", "limits"), ("rule", "rules")):
         if hasattr(args, attr) and isinstance(getattr(args, attr), list) and not getattr(args, attr) and data.get(key):
             setattr(args, attr, list(data[key]))
+    if hasattr(args, "norm") and getattr(args, "norm") is None and data.get("norm"):
+        args.norm = data["norm"]
+    if hasattr(args, "diverse") and not getattr(args, "diverse") and data.get("diverse"):
+        args.diverse = bool(data["diverse"])
+
+
+def _print_diagnostics(meta: Dict[str, Any]) -> None:
+    diag = meta.get("diagnostics") if isinstance(meta, dict) else None
+    if not isinstance(diag, dict):
+        return
+    reasons = diag.get("reasons") or ([diag["summary"]] if diag.get("summary") else [])
+    for r in reasons[:3]:
+        print(f"    why: {r}")
 
 
 def _print_breakdown(bd_list: Sequence[Any]) -> None:
@@ -488,6 +502,7 @@ def run_rank(argv: List[str]) -> None:
         formulas=args.formula,
         where=args.where,
         top_n=args.top,
+        norm=args.norm or "robust",
     )
 
     payload = {"meta": meta, "results": [r.to_dict() for r in ranked]}
@@ -500,10 +515,12 @@ def run_rank(argv: List[str]) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
-    print(f"\nRanked Results [{Path(args.source).name}] ({meta['after_filter']}/{meta['total_input']} matched/filtered)")
+    print(f"\nRanked Results [{Path(args.source).name}] ({meta['after_filter']}/{meta['total_input']} matched/filtered, norm={meta.get('norm', 'robust')})")
     print("═" * 84)
     if not ranked:
-        print("  (No matching rows.)\n")
+        print("  (No matching rows.)")
+        _print_diagnostics(meta)
+        print()
         return
     for idx, item in enumerate(ranked, 1):
         label = _row_label(item.row)
@@ -546,6 +563,7 @@ def run_basket(argv: List[str]) -> None:
         top_n=args.top,
         max_per_item=args.max_per_item,
         qty_field=args.qty_field,
+        norm=args.norm or "robust",
     )
 
     payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
@@ -569,10 +587,12 @@ def run_basket(argv: List[str]) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
-    print(f"\nBasket Solutions [{Path(args.source).name}] ({meta['after_filter']} candidates)")
+    print(f"\nBasket Solutions [{Path(args.source).name}] ({meta['after_filter']} candidates, norm={meta.get('norm', 'robust')})")
     print("═" * 84)
     if not solutions:
-        print("  (No feasible basket satisfies all limits.)\n")
+        print("  (No feasible basket satisfies all limits.)")
+        _print_diagnostics(meta)
+        print()
         return
     for idx, sol in enumerate(solutions, 1):
         lim_str = ", ".join(f"{k} => {v:g}" for k, v in sol.metrics.items())
@@ -593,6 +613,7 @@ def run_solve(argv: List[str]) -> None:
     parser.add_argument("--slot", action="append", default=[], help="Slot source binding: 'name=path[:table]'")
     parser.add_argument("--limit", "-l", action="append", default=[], help="Aggregate limit, e.g. 'sum(price) <= 1000'")
     parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rule, e.g. 'cpu.socket == mobo.socket'")
+    parser.add_argument("--diverse", action="store_true", help="Diversify Top-N combinations (avoid repeating nearly identical sets)")
     _add_common_solve_flags(parser, default_top=5)
     args = parser.parse_args(argv)
     _apply_prefs(args)
@@ -638,6 +659,8 @@ def run_solve(argv: List[str]) -> None:
         formulas=args.formula,
         where=args.where,
         top_n=args.top,
+        norm=args.norm or "robust",
+        diverse=bool(args.diverse),
     )
 
     payload = {"meta": meta, "solutions": [s.to_dict() for s in solutions]}
@@ -660,10 +683,12 @@ def run_solve(argv: List[str]) -> None:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
-    print(f"\nSet Combinations ({', '.join(f'{k}={v}' for k, v in meta.get('slot_counts', {}).items())})")
+    print(f"\nSet Combinations ({', '.join(f'{k}={v}' for k, v in meta.get('slot_counts', {}).items())}, norm={meta.get('norm', 'robust')})")
     print("═" * 84)
     if not solutions:
-        print("  (No valid combination satisfies all rules and limits.)\n")
+        print("  (No valid combination satisfies all rules and limits.)")
+        _print_diagnostics(meta)
+        print()
         return
     for idx, sol in enumerate(solutions, 1):
         lim_str = ", ".join(f"{k} => {v:g}" for k, v in sol.metrics.items())
@@ -710,10 +735,12 @@ def _flatten_preset_results(mode: str, results: Sequence[Dict[str, Any]]) -> Lis
 def _print_preset_execution(res: Dict[str, Any], explain: bool) -> None:
     mode = res["mode"]
     results = res["results"]
-    print(f"\nPreset '{res['title']}' [mode={mode}, profile={res['profile']}]")
+    print(f"\nPreset '{res['title']}' [mode={mode}, profile={res['profile']}, norm={res.get('norm', 'robust')}]")
     print("═" * 84)
     if not results:
-        print("  (No feasible results found.)\n")
+        print("  (No feasible results found.)")
+        _print_diagnostics(res.get("meta") or {})
+        print()
         return
     if mode == "rank":
         for idx, r in enumerate(results, 1):
@@ -765,6 +792,8 @@ def run_run(argv: List[str]) -> None:
     parser.add_argument("--prefer", "-p", action="append", default=[], help="Override signed weights, e.g. 'price:-0.5,score:+0.5'")
     parser.add_argument("--limit", "-l", action="append", default=[], help="Override aggregate limits, e.g. 'sum(price) <= 900'")
     parser.add_argument("--rule", "-r", action="append", default=[], help="Append compatibility rule")
+    parser.add_argument("--norm", choices=["robust", "minmax", "rank"], default=None, help="Override normalization mode")
+    parser.add_argument("--diverse", action="store_true", help="Diversify Top-N combinations")
     parser.add_argument("--top", "-n", type=int, default=None, help="Override top N results")
     parser.add_argument("--explain", action="store_true", help="Print per-term score breakdown")
     parser.add_argument("--json", action="store_true", help="Output structured JSON")
@@ -789,6 +818,8 @@ def run_run(argv: List[str]) -> None:
         rules_override=args.rule or None,
         top_n=args.top,
         source_overrides=src_overrides or None,
+        norm_override=args.norm,
+        diverse_override=True if args.diverse else None,
     )
 
     if args.export:

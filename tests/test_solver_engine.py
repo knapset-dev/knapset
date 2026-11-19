@@ -380,6 +380,91 @@ class TestV2Phase2CLI(unittest.TestCase):
         self.assertGreaterEqual(len(sols), 1)
         self.assertEqual(sols[0].slots["gpu"]["name"], "Mid GPU")
 
+    def test_normalization_modes_robust_minmax_rank_outlier_resilience(self) -> None:
+        # One extreme outlier (price=100000) compresses normal prices under minmax,
+        # whereas robust (P5-P95) and rank preserve price separation among normal items.
+        rows = [
+            {"name": "GreatDeal", "score": 82, "price": 100},
+            {"name": "OverpricedNormal", "score": 85, "price": 500},
+            {"name": "Mid1", "score": 70, "price": 200},
+            {"name": "Mid2", "score": 72, "price": 220},
+            {"name": "Mid3", "score": 74, "price": 240},
+            {"name": "Mid4", "score": 76, "price": 260},
+            {"name": "Mid5", "score": 78, "price": 280},
+            {"name": "Mid6", "score": 79, "price": 300},
+            {"name": "TypoOutlier", "score": 50, "price": 100000},
+        ]
+        mm_ranked, mm_meta = solve_rank(rows, weights="score:+0.5, price:-0.5", norm="minmax")
+        rb_ranked, rb_meta = solve_rank(rows, weights="score:+0.5, price:-0.5", norm="robust")
+        rk_ranked, rk_meta = solve_rank(rows, weights="score:+0.5, price:-0.5", norm="rank")
+
+        self.assertEqual(mm_meta["norm"], "minmax")
+        self.assertEqual(rb_meta["norm"], "robust")
+        self.assertEqual(rk_meta["norm"], "rank")
+        # Under minmax, price=100 vs 500 barely differs due to 100000 outlier -> OverpricedNormal wins
+        self.assertEqual(mm_ranked[0].row["name"], "OverpricedNormal")
+        # Under robust and rank, GreatDeal wins cleanly
+        self.assertEqual(rb_ranked[0].row["name"], "GreatDeal")
+        self.assertEqual(rk_ranked[0].row["name"], "GreatDeal")
+
+    def test_infeasibility_diagnostics_for_where_limit_and_rule(self) -> None:
+        # 1. Where filter drops all rows
+        _, meta_w = solve_rank([{"name": "A", "price": 500}], weights="price:-1", where=["price <= 100"])
+        self.assertIn("diagnostics", meta_w)
+        self.assertIn("price <= 100", meta_w["diagnostics"]["summary"])
+
+        # 2. Limit impossible in solve_sets
+        _, meta_l = solve_sets(
+            slot_pools={"a": [{"name": "A", "price": 300}], "b": [{"name": "B", "price": 400}]},
+            weights="price:-1",
+            limits=["sum(price) <= 500"],
+        )
+        self.assertIn("diagnostics", meta_l)
+        self.assertIn("700", meta_l["diagnostics"]["summary"])
+
+        # 3. Rule blocks all combinations
+        _, meta_r = solve_sets(
+            slot_pools={
+                "cpu": [{"name": "C1", "socket": "AM5", "price": 200}],
+                "mobo": [{"name": "M1", "socket": "LGA1700", "price": 150}],
+            },
+            weights="price:-1",
+            rules=["cpu.socket == mobo.socket"],
+        )
+        self.assertIn("diagnostics", meta_r)
+        self.assertIn("cpu.socket == mobo.socket", meta_r["diagnostics"]["summary"])
+
+    def test_solve_sets_diverse_avoids_near_duplicate_sets(self) -> None:
+        cpus = [{"name": "CPU1", "score": 100, "price": 200}, {"name": "CPU2", "score": 90, "price": 180}]
+        gpus = [{"name": "GPU1", "score": 100, "price": 300}, {"name": "GPU2", "score": 92, "price": 280}]
+        psus = [{"name": f"PSU{i}", "score": 50 - i, "price": 60 + i} for i in range(5)]
+
+        normal, _ = solve_sets(
+            slot_pools={"cpu": cpus, "gpu": gpus, "psu": psus},
+            weights="cpu.score:+0.4, gpu.score:+0.4, psu.score:+0.2",
+            top_n=3,
+            diverse=False,
+        )
+        diverse, meta_d = solve_sets(
+            slot_pools={"cpu": cpus, "gpu": gpus, "psu": psus},
+            weights="cpu.score:+0.4, gpu.score:+0.4, psu.score:+0.2",
+            top_n=3,
+            diverse=True,
+        )
+        self.assertTrue(meta_d["diverse"])
+        # Without diverse, top 3 all share CPU1 + GPU1 and only swap PSU
+        self.assertTrue(all(s.slots["cpu"]["name"] == "CPU1" and s.slots["gpu"]["name"] == "GPU1" for s in normal))
+        # With diverse, #2 must differ in at least 2 slots from #1
+        diffs = sum(1 for k in ("cpu", "gpu", "psu") if diverse[0].slots[k]["name"] != diverse[1].slots[k]["name"])
+        self.assertGreaterEqual(diffs, 2)
+
+    def test_new_formula_helpers(self) -> None:
+        self.assertEqual(SafeExpression("if_else(price < 100, 'cheap', 'pricy')").evaluate({"price": 50}), "cheap")
+        self.assertTrue(SafeExpression("startswith(name, 'rtx')").evaluate({"name": "RTX 4070"}))
+        self.assertTrue(SafeExpression("endswith(name, 'ti')").evaluate({"name": "RTX 4070 Ti"}))
+        self.assertTrue(SafeExpression("regex_match(name, '40[78]0')").evaluate({"name": "RTX 4080"}))
+        self.assertAlmostEqual(SafeExpression("pct_diff(80, 100)").evaluate({}), -20.0)
+
 
 if __name__ == "__main__":
     unittest.main()
