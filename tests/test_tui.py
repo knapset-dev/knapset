@@ -339,6 +339,32 @@ class TestSharedProfiles(unittest.TestCase):
                 self.assertEqual(s2.rules, ["cpu.socket == mobo.socket"])
                 self.assertEqual(len(s2.results), 1)
 
+    def test_suggest_weights_prefers_multi_slot_metrics_over_flags_and_duplicate_prices(self) -> None:
+        from tui import _suggest_weights_from_slots
+
+        pools = {
+            "cpu": [
+                {"id": 1, "price": 100, "price_uah": 4150, "is_new": 0, "is_bundle": 0, "cores": None},
+                {"id": 2, "price": 150, "price_uah": 6200, "is_new": 1, "is_bundle": 1, "cores": 6},
+                {"id": 3, "price": 190, "price_uah": 7900, "is_new": 1, "is_bundle": 0, "cores": 8},
+            ],
+            "gpu": [
+                {"id": 1, "price": 200, "price_uah": 8300, "vram_gb": 8},
+                {"id": 2, "price": 300, "price_uah": 12450, "vram_gb": 12},
+            ],
+            "psu": [
+                {"id": 1, "price": 50, "wattage": 550},
+                {"id": 2, "price": 80, "wattage": 750},
+            ],
+        }
+        suggested = dict(_suggest_weights_from_slots(pools, mode="solve"))
+        self.assertEqual(suggested["price"], -0.3)
+        self.assertNotIn("price_uah", suggested)
+        self.assertNotIn("cpu.is_bundle", suggested)
+        self.assertEqual(suggested["cpu.cores"], 0.5)
+        self.assertEqual(suggested["gpu.vram_gb"], 0.5)
+        self.assertEqual(suggested["psu.wattage"], 0.5)
+
 
 if __name__ == "__main__":
     unittest.main()

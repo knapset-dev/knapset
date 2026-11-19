@@ -74,35 +74,135 @@ def _collect_columns_from_rows(rows: Sequence[Dict[str, Any]], prefix: str = "")
 
 
 def _suggest_weights_from_slots(slot_pools: Dict[str, List[Dict[str, Any]]], mode: str) -> List[Tuple[str, float]]:
-    cost_tokens = ("price", "cost", "fee", "weight", "mass", "watt", "tdp", "latency", "ms")
-    picked: List[Tuple[str, float]] = []
-    seen = set()
+    cost_tokens = ("price", "cost", "fee", "weight", "mass", "tdp", "latency", "cl_latency", "boil", "ms")
+    skip_exact = {"id", "sku", "is_bundle", "specs_complete"}
+    flag_prefixes = ("is_", "has_")
+    flag_names = {"buyer_protection", "olx_delivery", "modular"}
     multi = mode == "solve" and len(slot_pools) > 1
-    for sname, rows in slot_pools.items():
-        if not rows:
-            continue
-        sample = rows[0]
-        for k, v in sample.items():
-            if str(k).lower() in ("id", "sku") or k in seen:
+    max_weights = min(6, max(5, len(slot_pools) + 1)) if multi else 5
+
+    slot_col_freq: Dict[str, int] = {}
+    for rows in slot_pools.values():
+        seen_in_slot = set()
+        for r in rows[:40]:
+            for k, v in r.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    seen_in_slot.add(str(k))
+        for k in seen_in_slot:
+            slot_col_freq[k] = slot_col_freq.get(k, 0) + 1
+
+    def _is_cost(name: str) -> bool:
+        low = name.lower()
+        if any(t in low for t in cost_tokens):
+            return True
+        return "watt" in low and "wattage" not in low
+
+    def _collect_slot_candidates(sname: str, rows: List[Dict[str, Any]]) -> List[Tuple[int, str, float, str]]:
+        """Returns sorted `(priority, expr_key, default_weight, col_name)` candidates for one slot."""
+        col_vals: Dict[str, List[float]] = {}
+        col_order: List[str] = []
+        nested_cols: List[Tuple[str, str]] = []
+        for r in rows[:40]:
+            for k, v in r.items():
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    ks = str(k)
+                    if ks not in col_vals:
+                        col_vals[ks] = []
+                        col_order.append(ks)
+                    col_vals[ks].append(float(v))
+                elif isinstance(v, dict):
+                    for sk, sv in v.items():
+                        if isinstance(sv, (int, float)) and not isinstance(sv, bool):
+                            pair = (str(k), str(sk))
+                            if pair not in nested_cols:
+                                nested_cols.append(pair)
+
+        cands: List[Tuple[int, str, float, str]] = []
+        for parent, sk in nested_cols:
+            if sk.lower() in skip_exact:
                 continue
-            if isinstance(v, (int, float)) and not isinstance(v, bool):
-                key = f"{sname}.{k}" if multi and not any(t in k.lower() for t in cost_tokens) else str(k)
-                if key in seen:
-                    continue
-                seen.add(key)
-                w = -0.3 if any(t in k.lower() for t in cost_tokens) else 0.5
-                picked.append((key, w))
-                if len(picked) >= 5:
-                    return picked
-            elif isinstance(v, dict):
-                for sk, sv in v.items():
-                    if isinstance(sv, (int, float)) and not isinstance(sv, bool):
-                        key = f"{sname}.{k}.{sk}" if multi else f"{k}.{sk}"
-                        if key not in seen:
-                            seen.add(key)
-                            picked.append((key, 0.5))
-                            if len(picked) >= 5:
-                                return picked
+            key = f"{sname}.{parent}.{sk}" if multi else f"{parent}.{sk}"
+            w = -0.3 if _is_cost(sk) else 0.5
+            # Prioritize attached reference performance/value fields
+            cands.append((0 if not _is_cost(sk) else 2, key, w, f"{parent}.{sk}"))
+
+        for col in col_order:
+            low = col.lower()
+            if low in skip_exact or low.endswith("_id"):
+                continue
+            vals = col_vals[col]
+            uniq = set(vals)
+            if len(uniq) <= 1:
+                continue  # constant column has zero discrimination
+            is_binary = uniq.issubset({0.0, 1.0}) or low.startswith(flag_prefixes) or low in flag_names
+            shared_cost = _is_cost(col) and slot_col_freq.get(col, 0) > 1
+            key = f"{sname}.{col}" if (multi and not shared_cost) else col
+            w = -0.3 if _is_cost(col) else 0.5
+            if low == "price":
+                prio = 1
+            elif _is_cost(col) and not low.startswith("price_"):
+                prio = 3
+            elif not is_binary and not low.startswith("price_"):
+                prio = 2
+            elif low.startswith("price_"):
+                prio = 5  # secondary currency column (e.g. price_uah)
+            else:
+                prio = 4  # binary 0/1 flags last
+            cands.append((prio, key, w, col))
+
+        cands.sort(key=lambda item: item[0])
+        return cands
+
+    per_slot = {
+        sname: _collect_slot_candidates(sname, rows)
+        for sname, rows in slot_pools.items()
+        if rows
+    }
+
+    picked: List[Tuple[str, float]] = []
+    seen_exprs = set()
+    has_price_family = False
+
+    def _try_add(expr_key: str, w: float, raw_col: str) -> bool:
+        nonlocal has_price_family
+        low = raw_col.lower()
+        if expr_key in seen_exprs:
+            return False
+        if low == "price" or low.startswith("price_"):
+            if has_price_family:
+                return False
+            has_price_family = True
+        seen_exprs.add(expr_key)
+        picked.append((expr_key, w))
+        return True
+
+    # Pull shared `price` once upfront when present
+    for sname, cands in per_slot.items():
+        for prio, expr_key, w, raw_col in cands:
+            if raw_col.lower() == "price":
+                _try_add(expr_key, w, raw_col)
+                break
+        if has_price_family:
+            break
+
+    # Round-robin across slots so multi-table DBs represent every slot instead of filling from slot 1
+    cursors = {sname: 0 for sname in per_slot}
+    while len(picked) < max_weights:
+        progressed = False
+        for sname, cands in per_slot.items():
+            idx = cursors[sname]
+            while idx < len(cands):
+                _, expr_key, w, raw_col = cands[idx]
+                idx += 1
+                if _try_add(expr_key, w, raw_col):
+                    progressed = True
+                    break
+            cursors[sname] = idx
+            if len(picked) >= max_weights:
+                break
+        if not progressed:
+            break
+
     return picked or [("price", -0.5)]
 
 
