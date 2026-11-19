@@ -19,7 +19,7 @@
     main { max-width: 1280px; margin: 18px auto; padding: 0 18px; display: grid; grid-template-columns: 430px 1fr; gap: 18px; }
     @media (max-width: 960px) { main { grid-template-columns: 1fr; } }
     .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
-    h2 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+    h2 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     label { display: block; font-size: 0.78rem; color: var(--muted); margin: 8px 0 4px; }
     input, select, textarea { width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; font-family: inherit; font-size: 0.85rem; }
     textarea { font-family: monospace; min-height: 48px; }
@@ -36,6 +36,7 @@
     .badge.pos { color: var(--green); border-color: rgba(52, 211, 153, 0.35); }
     .badge.neg { color: var(--red); border-color: rgba(248, 113, 113, 0.35); }
     .err { color: var(--red); margin-top: 8px; font-size: 0.83rem; }
+    .banner { border: 1px solid var(--border); background: var(--panel-2); border-radius: 6px; padding: 7px 10px; font-size: 0.82rem; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
     details { border: 1px solid var(--border); border-radius: 6px; padding: 6px 9px; margin-top: 8px; background: rgba(255,255,255,0.01); }
     summary { cursor: pointer; font-size: 0.8rem; color: var(--muted); font-weight: 600; }
     pre { font-size: 0.76rem; color: var(--muted); white-space: pre-wrap; margin-top: 6px; }
@@ -61,21 +62,25 @@
     <div class="row">
       <select id="presetSelect" style="flex:2" onchange="onPresetChange()"><option value="">-- Custom / Source Path --</option></select>
       <select id="profileSelect" style="flex:1"><option value="">default</option></select>
-      <button class="secondary" onclick="loadSelectedPreset()">Load</button>
+      <button type="button" class="secondary" onclick="loadSelectedPreset()">Load</button>
     </div>
 
     <label>Saved Shared Prefs (<code>--prefs</code>)</label>
     <div class="row">
       <select id="prefsSelect" style="flex:1"><option value="">-- None --</option></select>
-      <button class="secondary small" onclick="applySavedPref()">Apply</button>
-      <button class="secondary small" onclick="saveCurrentPref()">Save</button>
-      <button class="danger small" onclick="deleteSavedPref()">Del</button>
+      <button type="button" class="secondary small" onclick="applySavedPref()">Apply</button>
+      <button type="button" class="secondary small" onclick="saveCurrentPref()">Save</button>
+      <button type="button" class="danger small" onclick="deleteSavedPref()">Del</button>
     </div>
 
     <label>Source File Path (.db / .csv / .json)</label>
+    <div class="row" style="margin-bottom:5px">
+      <select id="localFilesSelect" style="flex:1" onchange="pickLocalFile()"><option value="">-- Pick local file in working dir --</option></select>
+      <button type="button" class="secondary small" onclick="refreshLocalFiles()">Scan</button>
+    </div>
     <div class="row">
-      <input id="sourcePath" placeholder="/path/to/data.db or items.csv" />
-      <button class="secondary" onclick="inspectSourcePath()">Inspect</button>
+      <input id="sourcePath" placeholder="/path/to/data.db or items.csv" onkeydown="if(event.key==='Enter'){event.preventDefault();inspectSourcePath();}" />
+      <button type="button" class="secondary" onclick="inspectSourcePath()">Inspect</button>
     </div>
     <div class="row">
       <div style="flex:1">
@@ -115,7 +120,7 @@
     <details id="refDetails">
       <summary>Reference DB Enrichment (<code>--ref</code> / Compare)</summary>
       <label>Reference Source (.db / .csv / .json)</label>
-      <input id="refSource" placeholder="/path/to/benchmarks.csv" />
+      <input id="refSource" placeholder="/path/to/benchmarks.csv" onkeydown="if(event.key==='Enter'){event.preventDefault();checkRefCompare();}" />
       <div class="row">
         <div style="flex:1">
           <label>Match Rule</label>
@@ -140,7 +145,7 @@
         </div>
       </div>
       <div class="row" style="margin-top:8px">
-        <button class="secondary small" onclick="checkRefCompare()">Check Match Coverage</button>
+        <button type="button" class="secondary small" onclick="checkRefCompare()">Check Match Coverage</button>
         <span id="compareSummary" style="font-size:0.78rem;color:var(--muted)"></span>
       </div>
     </details>
@@ -173,10 +178,9 @@
     <textarea id="rulesBox" placeholder="cpu.socket == mobo.socket"></textarea>
 
     <div class="row" style="margin-top:12px">
-      <button style="flex:1" onclick="runSolve()">Optimize (Ctrl+Enter)</button>
-      <button class="secondary" onclick="runSensitivity()">Stability</button>
-      <button class="secondary" onclick="downloadJson()">JSON</button>
-      <button class="secondary" onclick="downloadCsv()">CSV</button>
+      <button type="button" style="flex:1" onclick="runSolve()">Optimize (Ctrl+Enter)</button>
+      <button type="button" class="secondary" onclick="runSensitivity()">Stability</button>
+      <button type="button" class="secondary" onclick="saveCurrentPreset()">Save Preset</button>
     </div>
     <div id="statusMsg" class="err" style="color:var(--muted)"></div>
   </section>
@@ -184,14 +188,24 @@
   <section class="card">
     <h2>
       <span>Results &amp; Schema Inspector</span>
-      <button class="secondary small" onclick="toggleRegistry()">Registry</button>
+      <span class="row">
+        <button type="button" class="secondary small" onclick="downloadJson()">Export JSON</button>
+        <button type="button" class="secondary small" onclick="downloadCsv()">Export CSV</button>
+        <button type="button" class="secondary small" onclick="downloadMarkdown()">Export MD</button>
+        <button type="button" class="secondary small" onclick="toggleRegistry()">Registry</button>
+      </span>
     </h2>
+    <div id="topBanner" class="banner" style="display:none;">
+      <span id="topBannerText"></span>
+      <span id="topBannerActions"></span>
+    </div>
     <div id="registryPanel" style="display:none;margin-bottom:12px;padding:10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-2);">
       <div class="row" style="margin-bottom:8px;">
-        <input id="regQuery" placeholder="Search registry presets & themes..." />
-        <button class="small" onclick="searchRegistry()">Search</button>
+        <input id="regQuery" placeholder="Search registry presets & themes..." onkeydown="if(event.key==='Enter'){event.preventDefault();searchRegistry();}" />
+        <button type="button" class="small" onclick="searchRegistry()">Search</button>
+        <button type="button" class="secondary small" onclick="installStarterBundle()">Install Starter Pack</button>
       </div>
-      <div id="regResults" style="max-height:200px;overflow:auto;"></div>
+      <div id="regResults" style="max-height:220px;overflow:auto;"></div>
     </div>
     <div id="sensitivityPanel" style="margin-bottom:10px;"></div>
     <div id="schemaPanel" style="margin-bottom:12px;color:var(--muted);font-size:0.82rem;"></div>
@@ -207,19 +221,45 @@ let liveTimer = null;
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
-async function api(url, body) {
-  const opts = body ? { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) } : {};
-  const r = await fetch(url, opts);
-  return await r.json();
+function cleanPathInput(raw) {
+  const s = String(raw || '').trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
 }
-function setStatus(text, colorVar) {
+async function api(url, body) {
+  try {
+    const opts = body ? { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) } : {};
+    const r = await fetch(url, opts);
+    const text = await r.text();
+    let parsed = {};
+    try { parsed = text ? JSON.parse(text) : {}; } catch (_) { parsed = { error: text || `HTTP ${r.status}` }; }
+    if (!r.ok && !parsed.error) parsed.error = `HTTP ${r.status} ${r.statusText}`;
+    return parsed;
+  } catch (err) {
+    return { error: String(err && err.message ? err.message : err) };
+  }
+}
+function setStatus(text, colorVar, actionHtml) {
   const msg = document.getElementById('statusMsg');
   msg.textContent = text;
   msg.style.color = colorVar || 'var(--muted)';
+  const banner = document.getElementById('topBanner');
+  const bText = document.getElementById('topBannerText');
+  const bAct = document.getElementById('topBannerActions');
+  if (text) {
+    banner.style.display = 'flex';
+    bText.textContent = text;
+    bText.style.color = colorVar || 'var(--text)';
+    bAct.innerHTML = actionHtml || '';
+  } else {
+    banner.style.display = 'none';
+  }
 }
 function scheduleLiveSolve() {
   if (!document.getElementById('liveSolveCheck').checked) return;
-  if (!document.getElementById('sourcePath').value.trim() && !document.getElementById('presetSelect').value) return;
+  if (!cleanPathInput(document.getElementById('sourcePath').value) && !document.getElementById('presetSelect').value) return;
   clearTimeout(liveTimer);
   liveTimer = setTimeout(() => runSolve(), 160);
 }
@@ -250,17 +290,42 @@ async function switchTheme() {
   const name = document.getElementById('themeSelect').value;
   if (!name) return;
   const res = await api('/api/themes/use', { name });
+  if (res.error) { setStatus(res.error, 'var(--red)'); return; }
   if (res.theme) applyThemeCss(res.theme.css_vars);
   await refreshThemes();
+  setStatus(`Switched active theme to '${name}'.`, 'var(--green)');
+}
+
+async function refreshLocalFiles() {
+  const data = await api('/api/files');
+  const sel = document.getElementById('localFilesSelect');
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">-- Pick local file in working dir --</option>';
+  (data.files || []).forEach(f => {
+    const o = document.createElement('option');
+    o.value = f;
+    o.textContent = f.split('/').slice(-2).join('/');
+    sel.appendChild(o);
+  });
+  if (prev) sel.value = prev;
+}
+function pickLocalFile() {
+  const val = document.getElementById('localFilesSelect').value;
+  if (!val) return;
+  document.getElementById('sourcePath').value = val;
+  inspectSourcePath();
 }
 
 async function refreshPresets() {
   const data = await api('/api/presets');
   const sel = document.getElementById('presetSelect');
   const prev = sel.value;
-  sel.innerHTML = '<option value="">-- Custom / Source Path --</option>';
+  const list = data.presets || [];
+  sel.innerHTML = list.length
+    ? '<option value="">-- Custom / Source Path --</option>'
+    : '<option value="">-- No presets installed (use Registry) --</option>';
   presetMap = {};
-  (data.presets || []).forEach(p => {
+  list.forEach(p => {
     presetMap[p.name] = p;
     const o = document.createElement('option');
     o.value = p.name;
@@ -284,20 +349,77 @@ function onPresetChange() {
 }
 async function loadSelectedPreset() {
   const name = document.getElementById('presetSelect').value;
-  if (!name) return;
+  if (!name) {
+    if (!Object.keys(presetMap).length) {
+      setStatus('No presets installed yet — click Install Starter Pack or pick one from Registry.', 'var(--warn)', '<button type="button" class="small" onclick="installStarterBundle()">Install Starter Pack</button>');
+      document.getElementById('registryPanel').style.display = 'block';
+      searchRegistry();
+    } else {
+      setStatus('Select a preset from the dropdown first before clicking Load.', 'var(--warn)');
+    }
+    return;
+  }
+  // Clear source-file override so Optimize / Live Sliders operate on the loaded preset
+  document.getElementById('sourcePath').value = '';
+  document.getElementById('localFilesSelect').value = '';
+  document.getElementById('tableSelect').innerHTML = '<option value="">-- All / Default --</option>';
+  document.getElementById('refSource').value = '';
+  document.getElementById('schemaPanel').innerHTML = '';
+  document.getElementById('sensitivityPanel').innerHTML = '';
+
   const profile = document.getElementById('profileSelect').value || undefined;
   const res = await api('/api/solve', { preset: name, profile });
   renderResponse(res);
   if (res.mode) document.getElementById('modeSelect').value = res.mode;
   if (res.norm) document.getElementById('normSelect').value = res.norm;
+  document.getElementById('diverseCheck').checked = Boolean(res.diverse);
   if (res.weights) {
     document.getElementById('weightsBox').value = Object.entries(res.weights).map(([k,v]) => `${k}:${v}`).join(', ');
+    syncSlidersFromBox();
+  } else {
+    document.getElementById('weightsBox').value = '';
     syncSlidersFromBox();
   }
   document.getElementById('formulasBox').value = (res.formulas || []).join('\n');
   document.getElementById('whereBox').value = (res.where || []).join('\n');
   document.getElementById('limitsBox').value = (res.limits || []).join('\n');
   document.getElementById('rulesBox').value = (res.rules || []).join('\n');
+}
+
+async function saveCurrentPreset() {
+  const name = prompt('Save current configuration as a local preset name (e.g. my_setup):');
+  if (!name || !name.trim()) return;
+  const splitLines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+  const src = cleanPathInput(document.getElementById('sourcePath').value);
+  const tbl = document.getElementById('tableSelect').value || undefined;
+  const weightsObj = {};
+  parseWeightsText(document.getElementById('weightsBox').value).forEach(w => { weightsObj[w.expr] = w.val; });
+  const sources = {};
+  if (src) {
+    const sKey = tbl || 'main';
+    sources[sKey] = tbl ? { source: src, table: tbl } : { source: src };
+  }
+  const preset = {
+    schema_version: '2.0',
+    name: name.trim().toLowerCase().replace(/\s+/g, '_'),
+    title: name.trim(),
+    description: 'Saved from Knapset v2 Web Studio',
+    mode: document.getElementById('modeSelect').value,
+    norm: document.getElementById('normSelect').value,
+    diverse: document.getElementById('diverseCheck').checked,
+    sources,
+    formulas: splitLines('formulasBox'),
+    where: splitLines('whereBox'),
+    limits: splitLines('limitsBox'),
+    rules: splitLines('rulesBox'),
+    profiles: { default: { weights: weightsObj } },
+    default_profile: 'default',
+  };
+  const res = await api('/api/save-preset', { preset });
+  if (res.error) { setStatus(res.error, 'var(--red)'); return; }
+  await refreshPresets();
+  if (res.name && presetMap[res.name]) document.getElementById('presetSelect').value = res.name;
+  setStatus(`Saved preset '${res.name}' -> ${res.saved}`, 'var(--green)');
 }
 
 async function refreshPrefs() {
@@ -315,12 +437,13 @@ async function refreshPrefs() {
 }
 async function applySavedPref() {
   const name = document.getElementById('prefsSelect').value;
-  if (!name) return;
+  if (!name) { setStatus('Select a saved preference profile first.', 'var(--warn)'); return; }
   const data = await api('/api/prefs');
   const prof = (data.profiles || {})[name];
   if (!prof) return;
   if (prof.mode) document.getElementById('modeSelect').value = prof.mode;
   if (prof.norm) document.getElementById('normSelect').value = prof.norm;
+  if (prof.diverse !== undefined) document.getElementById('diverseCheck').checked = Boolean(prof.diverse);
   if (prof.weights) {
     document.getElementById('weightsBox').value = Object.entries(prof.weights).map(([k,v]) => `${k}:${v}`).join(', ');
     syncSlidersFromBox();
@@ -329,7 +452,7 @@ async function applySavedPref() {
   document.getElementById('whereBox').value = (prof.where || []).join('\n');
   document.getElementById('limitsBox').value = (prof.limits || []).join('\n');
   document.getElementById('rulesBox').value = (prof.rules || []).join('\n');
-  if (document.getElementById('sourcePath').value.trim()) {
+  if (cleanPathInput(document.getElementById('sourcePath').value)) {
     await runSolve(name);
   } else {
     setStatus(`Loaded saved preference '${name}'.`, 'var(--green)');
@@ -342,6 +465,8 @@ async function saveCurrentPref() {
   const res = await api('/api/prefs/save', {
     name: name.trim(),
     mode: document.getElementById('modeSelect').value,
+    norm: document.getElementById('normSelect').value,
+    diverse: document.getElementById('diverseCheck').checked,
     weights: document.getElementById('weightsBox').value.trim(),
     formulas: splitLines('formulasBox'),
     where: splitLines('whereBox'),
@@ -355,7 +480,7 @@ async function saveCurrentPref() {
 }
 async function deleteSavedPref() {
   const name = document.getElementById('prefsSelect').value;
-  if (!name) return;
+  if (!name) { setStatus('Select a saved preference to delete.', 'var(--warn)'); return; }
   const res = await api('/api/prefs/delete', { name });
   if (res.error) { setStatus(res.error, 'var(--red)'); return; }
   await refreshPrefs();
@@ -445,8 +570,13 @@ function suggestWeights() {
 }
 
 async function inspectSourcePath() {
-  const src = document.getElementById('sourcePath').value.trim();
-  if (!src) return;
+  const src = cleanPathInput(document.getElementById('sourcePath').value);
+  document.getElementById('sourcePath').value = src;
+  if (!src) {
+    setStatus('Enter or pick a Source file path (.db / .csv / .json) before clicking Inspect.', 'var(--warn)');
+    return;
+  }
+  setStatus('Inspecting source...', 'var(--muted)');
   const data = await api('/api/inspect', { source: src });
   if (data.error) { setStatus(data.error, 'var(--red)'); return; }
   inspectedSchema = data.schema;
@@ -457,20 +587,26 @@ async function inspectSourcePath() {
     o.value = t.name; o.textContent = `${t.name} (${t.row_count} rows)`;
     tblSel.appendChild(o);
   });
-  if ((data.schema.tables || []).length > 1 && document.getElementById('modeSelect').value !== 'solve') {
+  if ((data.schema.tables || []).length > 1) {
     document.getElementById('modeSelect').value = 'solve';
+  } else if (document.getElementById('modeSelect').value === 'solve') {
+    document.getElementById('modeSelect').value = 'rank';
   }
-  const html = (data.schema.tables || []).map(t =>
-    `<div><b>${esc(t.name)}</b> (${t.row_count} rows): ` +
-    t.columns.map(c => `${esc(c.name)}<i>(${esc(c.kind)})</i>`).join(', ') + `</div>`
-  ).join('');
-  document.getElementById('schemaPanel').innerHTML = html;
-  setStatus(`Inspected ${(data.schema.tables || []).length} table(s).`, 'var(--green)');
+  const html = (data.schema.tables || []).map(t => {
+    const colsHtml = (t.columns || []).map(c => {
+      const rng = (c.min_val !== null && c.min_val !== undefined && c.max_val !== null && c.max_val !== undefined)
+        ? ` [${c.min_val}..${c.max_val}]` : '';
+      return `${esc(c.name)}<i>(${esc(c.kind)}${esc(rng)})</i>`;
+    }).join(', ');
+    return `<div style="margin-bottom:4px"><b>${esc(t.name)}</b> (${t.row_count} rows): ${colsHtml}</div>`;
+  }).join('');
+  document.getElementById('schemaPanel').innerHTML = html || '<div>(Empty schema)</div>';
+  setStatus(`Inspected ${(data.schema.tables || []).length} table(s) from ${src}.`, 'var(--green)');
 }
 
 async function checkRefCompare() {
-  const src = document.getElementById('sourcePath').value.trim();
-  const refSrc = document.getElementById('refSource').value.trim();
+  const src = cleanPathInput(document.getElementById('sourcePath').value);
+  const refSrc = cleanPathInput(document.getElementById('refSource').value);
   if (!src || !refSrc) { setStatus('Enter both Source and Reference Source first.', 'var(--warn)'); return; }
   const res = await api('/api/compare', {
     source: src,
@@ -485,12 +621,13 @@ async function checkRefCompare() {
   const m = res.match;
   const pct = (m.match_rate * 100).toFixed(1);
   document.getElementById('compareSummary').textContent = `${m.matched}/${m.total} matched (${pct}%) via ${m.left_field} (${m.strategy}) -> ${m.alias}.${m.right_field}`;
+  setStatus(`Reference match coverage: ${m.matched}/${m.total} (${pct}%).`, 'var(--green)');
 }
 
 function buildSolvePayload(prefsOverride) {
   const splitLines = id => document.getElementById(id).value.split('\n').map(s => s.trim()).filter(Boolean);
-  const src = document.getElementById('sourcePath').value.trim();
-  const refSrc = document.getElementById('refSource').value.trim();
+  const src = cleanPathInput(document.getElementById('sourcePath').value);
+  const refSrc = cleanPathInput(document.getElementById('refSource').value);
   const pins = splitLines('pinBox');
   const excludes = splitLines('excludeBox');
   return {
@@ -518,12 +655,22 @@ function buildSolvePayload(prefsOverride) {
 }
 
 async function runSolve(prefsOverride) {
-  const res = await api('/api/solve', buildSolvePayload(prefsOverride));
+  const payload = buildSolvePayload(prefsOverride);
+  if (!payload.preset && !payload.source) {
+    setStatus('Pick/Load an installed preset or Inspect a Source file first.', 'var(--warn)');
+    return;
+  }
+  const res = await api('/api/solve', payload);
   renderResponse(res);
 }
 
 async function runSensitivity() {
-  const res = await api('/api/sensitivity', buildSolvePayload());
+  const payload = buildSolvePayload();
+  if (!payload.preset && !payload.source) {
+    setStatus('Pick/Load an installed preset or Inspect a Source file first.', 'var(--warn)');
+    return;
+  }
+  const res = await api('/api/sensitivity', payload);
   const box = document.getElementById('sensitivityPanel');
   if (res.error) { setStatus(res.error, 'var(--red)'); return; }
   if (!res.baseline) {
@@ -541,9 +688,11 @@ async function runSensitivity() {
     ${res.closest_challenger ? `<div style="margin-top:4px;font-size:0.8rem;color:var(--warn)">Closest challenger: ${esc(res.closest_challenger)}</div>` : ''}
     ${lims ? `<div style="margin-top:6px">${lims}</div>` : ''}
   </div>`;
+  setStatus(`Stability: ${res.stability_pct}% (#1: ${res.baseline.label}).`, 'var(--green)');
 }
 
 function quickExclude(label) {
+  if (!label) return;
   const box = document.getElementById('excludeBox');
   const cur = box.value.trim();
   box.value = cur ? cur + '\n' + label : label;
@@ -551,18 +700,30 @@ function quickExclude(label) {
   runSolve();
 }
 
+function itemDisplayLabel(r) {
+  if (r.row) return r.row.title || r.row.name || r.row.model || r.row.instance || '';
+  if (r.items && r.items.length) {
+    return r.items.map(it => `${(it.row && (it.row.name || it.row.title)) || 'item'}${it.count > 1 ? ' x' + it.count : ''}`).join(' + ');
+  }
+  if (r.slots) {
+    return Object.entries(r.slots).map(([s, obj]) => `${s}:${obj.name || obj.title || obj.model || obj.id || '?'}`).join(' | ');
+  }
+  return '';
+}
+
 function renderResponse(res) {
-  lastPayload = res;
   if (res.error) { setStatus(res.error, 'var(--red)'); return; }
+  lastPayload = res;
   const skipped = (res.meta && res.meta.skipped_prefs_terms) ? ` (skipped missing cols: ${res.meta.skipped_prefs_terms.join(', ')})` : '';
   const diag = (res.meta && res.meta.diagnostics && res.meta.diagnostics.summary) ? ` — ${res.meta.diagnostics.summary}` : '';
   setStatus(`Solved ${(res.results || []).length} result(s) in mode=${res.mode}.${skipped}${diag}`, (res.results || []).length ? 'var(--green)' : 'var(--warn)');
   const panel = document.getElementById('resultsPanel');
-  const emptyHtml = diag ? `<div class="result-card"><b>No feasible results</b><div style="margin-top:4px;color:var(--warn)">${esc(res.meta.diagnostics.summary)}</div></div>` : '<div>No feasible results found.</div>';
+  const emptyHtml = diag ? `<div class="result-card"><b>No feasible results</b><div style="margin-top:4px;color:var(--warn)">${esc(res.meta.diagnostics.summary)}</div></div>` : '<div class="result-card">No feasible results found.</div>';
   panel.innerHTML = (res.results || []).map((r, i) => {
     const score = r.score ?? r.total_score ?? 0;
-    const itemLbl = r.row ? (r.row.title || r.row.name || r.row.model || '') : '';
-    const exBtn = itemLbl ? `<button class="danger small" onclick="quickExclude('${esc(itemLbl).replace(/'/g, "\\'")}')">Exclude</button>` : '';
+    const itemLbl = itemDisplayLabel(r);
+    const canQuickExclude = Boolean(r.row && itemLbl);
+    const exBtn = canQuickExclude ? `<button type="button" class="danger small" data-exclude-idx="${i}">Exclude</button>` : '';
     const bdHtml = (r.breakdown || []).map(b => {
       const cls = b.weight >= 0 ? 'pos' : 'neg';
       return `<span class="badge ${cls}">${esc(b.expression)}: raw=${esc(b.raw_value)} n=${b.normalized} w=${b.weight} (+${b.contribution})</span>`;
@@ -571,25 +732,89 @@ function renderResponse(res) {
   }).join('') || emptyHtml;
 }
 
+document.getElementById('resultsPanel').addEventListener('click', ev => {
+  const btn = ev.target.closest('button[data-exclude-idx]');
+  if (!btn || !lastPayload || !lastPayload.results) return;
+  const idx = parseInt(btn.getAttribute('data-exclude-idx'), 10);
+  const resItem = lastPayload.results[idx];
+  if (resItem) quickExclude(itemDisplayLabel(resItem));
+});
+
+function triggerDownload(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 150);
+}
+
+function flattenPayloadRows(payload) {
+  const rows = [];
+  (payload.results || []).forEach((r, idx) => {
+    if (r.items && Array.isArray(r.items)) {
+      r.items.forEach(it => {
+        const flat = { solution: idx + 1, total_score: r.total_score ?? 0, qty: it.count ?? 1, item_score: it.item_score ?? 0 };
+        if (it.row) Object.entries(it.row).forEach(([k, v]) => { if (typeof v !== 'object') flat[k] = v; });
+        if (r.metrics) Object.entries(r.metrics).forEach(([k, v]) => { flat['metric_' + k] = v; });
+        rows.push(flat);
+      });
+    } else if (r.slots) {
+      Object.entries(r.slots).forEach(([s, obj]) => {
+        const flat = { solution: idx + 1, total_score: r.total_score ?? 0, slot: s };
+        Object.entries(obj || {}).forEach(([k, v]) => { if (typeof v !== 'object') flat[k] = v; });
+        if (r.metrics) Object.entries(r.metrics).forEach(([k, v]) => { flat['metric_' + k] = v; });
+        rows.push(flat);
+      });
+    } else {
+      const flat = { rank: idx + 1, score: r.score ?? r.total_score ?? 0 };
+      if (r.row) Object.entries(r.row).forEach(([k, v]) => { if (typeof v !== 'object') flat[k] = v; });
+      rows.push(flat);
+    }
+  });
+  return rows;
+}
+
 function downloadJson() {
-  if (!lastPayload) return;
-  const blob = new Blob([JSON.stringify(lastPayload, null, 2)], {type: 'application/json'});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'knapset_results.json'; a.click();
+  if (!lastPayload) { setStatus('Run Optimize or Load a preset first before exporting JSON.', 'var(--warn)'); return; }
+  triggerDownload('knapset_results.json', JSON.stringify(lastPayload, null, 2), 'application/json');
+  setStatus('Exported knapset_results.json.', 'var(--green)');
 }
 function downloadCsv() {
-  if (!lastPayload || !(lastPayload.results || []).length) return;
-  const rows = lastPayload.results.map((r, idx) => {
-    const flat = { rank: idx + 1, score: r.score ?? r.total_score ?? 0 };
-    if (r.row) Object.entries(r.row).forEach(([k, v]) => { if (typeof v !== 'object') flat[k] = v; });
-    if (r.slots) Object.entries(r.slots).forEach(([s, obj]) => { flat[s] = obj.title || obj.name || obj.model || obj.id || JSON.stringify(obj); });
-    if (r.metrics) Object.entries(r.metrics).forEach(([k, v]) => { flat['metric_' + k] = v; });
-    return flat;
-  });
+  if (!lastPayload || !(lastPayload.results || []).length) {
+    setStatus('No results to export — run Optimize or Load a preset first.', 'var(--warn)');
+    return;
+  }
+  const rows = flattenPayloadRows(lastPayload);
   const cols = Array.from(new Set(rows.flatMap(Object.keys)));
   const csvEsc = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const csv = [cols.map(csvEsc).join(','), ...rows.map(r => cols.map(c => csvEsc(r[c])).join(','))].join('\n');
-  const blob = new Blob([csv], {type: 'text/csv'});
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'knapset_results.csv'; a.click();
+  triggerDownload('knapset_results.csv', csv, 'text/csv;charset=utf-8');
+  setStatus(`Exported knapset_results.csv (${rows.length} row(s)).`, 'var(--green)');
+}
+function downloadMarkdown() {
+  if (!lastPayload || !(lastPayload.results || []).length) {
+    setStatus('No results to export — run Optimize or Load a preset first.', 'var(--warn)');
+    return;
+  }
+  const rows = flattenPayloadRows(lastPayload);
+  const cols = Array.from(new Set(rows.flatMap(Object.keys)));
+  const mdEsc = v => String(v ?? '').replace(/\|/g, '\\|');
+  const lines = [
+    `# Knapset Results (${lastPayload.mode || 'solve'})`,
+    '',
+    '| ' + cols.join(' | ') + ' |',
+    '| ' + cols.map(() => '---').join(' | ') + ' |',
+    ...rows.map(r => '| ' + cols.map(c => mdEsc(r[c])).join(' | ') + ' |'),
+  ];
+  triggerDownload('knapset_results.md', lines.join('\n') + '\n', 'text/markdown;charset=utf-8');
+  setStatus('Exported knapset_results.md.', 'var(--green)');
 }
 
 function toggleRegistry() {
@@ -607,15 +832,20 @@ async function searchRegistry() {
   el.innerHTML = items.map(m => `
     <div class="reg-item">
       <div><b>${esc(m.name)}</b> <span class="badge">${esc(m.type)}</span><div style="color:var(--muted);font-size:0.75rem">${esc(m.description || '')}</div></div>
-      <button class="secondary small" onclick="installRegItem('${esc(m.type)}:${esc(m.name)}', '${esc(m.type)}')">Install</button>
+      <button type="button" class="secondary small" onclick="installRegItem('${esc(m.type)}:${esc(m.name)}', '${esc(m.type)}')">Install</button>
     </div>
   `).join('') || '<div style="color:var(--muted);font-size:0.8rem">No registry items found.</div>';
 }
 async function installRegItem(target, itemType) {
+  setStatus(`Installing ${target}...`, 'var(--muted)');
   const res = await api('/api/registry/install', { target, use: itemType === 'themes' });
   setStatus(res.message || res.error || 'Done', res.ok ? 'var(--green)' : 'var(--red)');
   await refreshPresets();
   await refreshThemes();
+  await searchRegistry();
+}
+async function installStarterBundle() {
+  await installRegItem('bundle:starter-presets', 'bundle');
 }
 
 document.addEventListener('keydown', e => {
@@ -628,6 +858,7 @@ document.addEventListener('keydown', e => {
 refreshThemes();
 refreshPresets();
 refreshPrefs();
+refreshLocalFiles();
 </script>
 </body>
 </html>

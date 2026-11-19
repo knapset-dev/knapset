@@ -30,6 +30,7 @@ from preset_loader import (
     PresetConfig,
     delete_shared_profile,
     discover_presets,
+    get_user_presets_dir,
     list_shared_profiles,
     resolve_prefs_for_pools,
     resolve_preset,
@@ -45,6 +46,7 @@ from theme_config import (
     reset_active_theme,
     set_active_theme,
 )
+from tui.state import discover_local_data_files
 
 APP_VERSION = "2.0.0"
 
@@ -272,9 +274,16 @@ class KnapsetV2WebHandler(BaseHTTPRequestHandler):
         qs = parse_qs(parsed.query)
         try:
             if route == "/":
-                self._send_html(DASHBOARD_HTML)
+                self._send_html(_load_dashboard_html())
             elif route == "/api/health":
                 self._send_json(HTTPStatus.OK, {"status": "ok", "version": APP_VERSION})
+            elif route == "/api/files":
+                base = Path(qs.get("dir", [str(Path.cwd())])[0]).expanduser()
+                files = discover_local_data_files(base if base.is_dir() else Path.cwd())
+                self._send_json(
+                    HTTPStatus.OK,
+                    {"cwd": str(Path.cwd()), "files": [str(f) for f in files]},
+                )
             elif route == "/api/presets":
                 presets = discover_presets()
                 self._send_json(
@@ -404,8 +413,11 @@ class KnapsetV2WebHandler(BaseHTTPRequestHandler):
                         )
                 self._send_json(HTTPStatus.OK, rep)
             elif self.path == "/api/save-preset":
-                out_path = save_preset(PresetConfig.from_dict(body["preset"]), body["path"], overwrite=True)
-                self._send_json(HTTPStatus.OK, {"saved": str(out_path)})
+                cfg = PresetConfig.from_dict(body["preset"])
+                raw_path = body.get("path")
+                target_path = Path(raw_path) if raw_path else (get_user_presets_dir() / f"{cfg.name}.json")
+                out_path = save_preset(cfg, target_path, overwrite=True)
+                self._send_json(HTTPStatus.OK, {"saved": str(out_path), "name": cfg.name})
             elif self.path == "/api/prefs/save":
                 name = str(body.get("name") or "").strip()
                 if not name:
@@ -417,6 +429,8 @@ class KnapsetV2WebHandler(BaseHTTPRequestHandler):
                     weights = {t.expression: t.weight for t in parse_weights(weights_raw)} if weights_raw else {}
                 data = {
                     "mode": body.get("mode") or "rank",
+                    "norm": body.get("norm") or "robust",
+                    "diverse": bool(body.get("diverse", False)),
                     "weights": weights,
                     "formulas": list(body.get("formulas") or []),
                     "where": list(body.get("where") or []),

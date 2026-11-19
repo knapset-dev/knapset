@@ -108,12 +108,33 @@ class TestV2WebAndMCP(unittest.TestCase):
                     reg = _http_json(f"http://127.0.0.1:{port}/api/registry?q=pc_build")
                     self.assertTrue(any(m["name"] == "pc_build" for m in reg.get("modules", [])))
 
+                    files_resp = _http_json(f"http://127.0.0.1:{port}/api/files?dir={tmp_root}")
+                    self.assertTrue(any(f.endswith("gpus.csv") for f in files_resp["files"]))
+
+                    saved_preset = _http_json(
+                        f"http://127.0.0.1:{port}/api/save-preset",
+                        {
+                            "preset": {
+                                "schema_version": "2.0",
+                                "name": "studio_test",
+                                "mode": "rank",
+                                "sources": {"gpus": {"source": str(csv_path)}},
+                                "profiles": {"default": {"weights": {"score": 0.5, "price": -0.5}}},
+                            }
+                        },
+                    )
+                    self.assertEqual(saved_preset["name"], "studio_test")
+                    self.assertTrue(Path(saved_preset["saved"]).is_file())
+
                     sens = _http_json(
                         f"http://127.0.0.1:{port}/api/sensitivity",
                         {"source": str(csv_path), "mode": "rank", "weights": "score:+0.4, price:-0.6"},
                     )
                     self.assertEqual(sens["baseline"]["label"], "RTX 4070")
                     self.assertGreaterEqual(sens["stability_pct"], 0.0)
+
+                    self.assertIn("document.body.appendChild(a)", html)
+                    self.assertIn("data-exclude-idx", html)
         finally:
             server.shutdown()
             server.server_close()
