@@ -23,7 +23,7 @@ class TestCliSmokeV2(unittest.TestCase):
         with redirect_stdout(help_buf):
             main.main(["--help"])
         out = help_buf.getvalue()
-        for cmd in ("inspect", "init", "compare", "rank", "basket", "solve", "sensitivity", "run", "preset", "reg", "tui", "serve", "mcp"):
+        for cmd in ("inspect", "init", "compare", "rank", "basket", "solve", "sensitivity", "frontier", "run", "preset", "reg", "tui", "serve", "mcp"):
             self.assertIn(cmd, out)
 
     def test_dynamic_cli_prog_in_subparser_help(self) -> None:

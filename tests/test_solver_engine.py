@@ -521,6 +521,44 @@ class TestV2Phase2CLI(unittest.TestCase):
             self.assertEqual(data["mode"], "rank")
             self.assertIsNotNone(data["baseline"])
 
+    def test_basket_explain_unknown_term_hint_and_pareto_frontier(self) -> None:
+        from solver_engine import compute_pareto_frontier
+
+        items = [
+            {"name": "A", "score": 60, "price": 50},
+            {"name": "B", "score": 85, "price": 120},
+            {"name": "C", "score": 98, "price": 250},
+        ]
+        # 1. Unknown column suggestion warning
+        _, meta_w = solve_rank(items, weights="scroe:+1.0")
+        self.assertTrue(any("score" in w for w in meta_w.get("warnings", [])))
+
+        # 2. Basket breakdown
+        sols, _ = solve_basket(items, weights="score:+0.7, price:-0.3", limits=["sum(price) <= 200"])
+        self.assertGreaterEqual(len(sols), 1)
+        self.assertEqual(len(sols[0].breakdown), 2)
+        self.assertIn("breakdown", sols[0].to_dict())
+
+        # 3. Pareto frontier
+        fr = compute_pareto_frontier(
+            "rank",
+            rows=items,
+            weights="score:+0.8, price:-0.2",
+            cost_expr="price",
+            budgets=[60, 150, 300],
+        )
+        pts = fr["frontier"]
+        self.assertGreaterEqual(len(pts), 2)
+        self.assertTrue(all(pts[i]["score"] < pts[i + 1]["score"] for i in range(len(pts) - 1)))
+
+        # 4. CLI ks frontier --json
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "items.csv"
+            p.write_text("name,score,price\nA,60,50\nB,85,120\nC,98,250\n", encoding="utf-8")
+            out = self._run_cli(["frontier", str(p), "--prefer", "score:+0.8,price:-0.2", "--budgets", "60,150,300", "--json"])
+            data = json.loads(out)
+            self.assertGreaterEqual(len(data["frontier"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,7 @@ from formula_engine import (
     parse_formulas,
     parse_weights,
     resolve_field_path,
+    suggest_columns,
     to_number,
 )
 
@@ -77,6 +78,7 @@ class BasketSolution:
     mean_score: float
     metrics: Dict[str, float]
     item_scores: List[float]
+    breakdown: List[TermBreakdown] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         picked = []
@@ -88,6 +90,7 @@ class BasketSolution:
             "item_count": sum(self.counts),
             "metrics": dict(self.metrics),
             "items": picked,
+            "breakdown": [b.to_dict() for b in self.breakdown],
         }
 
 
@@ -306,6 +309,33 @@ def _prepare_rows(
     return filter_rows(processed, where)
 
 
+def _collect_row_keys(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    keys: Set[str] = set()
+    for r in rows[:30]:
+        for k, v in r.items():
+            keys.add(str(k))
+            if isinstance(v, dict):
+                for sk in v.keys():
+                    keys.add(f"{k}.{sk}")
+    return sorted(keys)
+
+
+def _warn_unknown_terms(terms: Sequence[WeightTerm], rows: Sequence[Dict[str, Any]]) -> List[str]:
+    if not terms or not rows:
+        return []
+    avail = _collect_row_keys(rows)
+    avail_set = set(avail)
+    warnings: List[str] = []
+    for term in terms:
+        if all(to_number(term.compiled.evaluate(r)) is None for r in rows[:20]):
+            roots = [r for r in term.compiled.roots_referenced if r not in avail_set]
+            for missing in roots or [term.expression]:
+                hints = suggest_columns(missing, avail)
+                hint_txt = f" (did you mean: {', '.join(hints)}?)" if hints else ""
+                warnings.append(f"Term '{term.expression}' had no numeric values{hint_txt}")
+    return warnings
+
+
 def _compute_term_ranges(
     rows: Sequence[Dict[str, Any]],
     terms: Sequence[WeightTerm],
@@ -412,6 +442,9 @@ def solve_rank(
         "after_filter": len(filtered),
         "returned": min(len(ranked), max(0, int(top_n))) if top_n > 0 else len(ranked),
     }
+    warns = _warn_unknown_terms(terms, filtered)
+    if warns:
+        meta["warnings"] = warns
     if not filtered:
         if after_where and exclude:
             msg = f"All {len(after_where)} filtered row(s) were excluded by --exclude ({', '.join(exclude)})."
@@ -485,7 +518,7 @@ def solve_basket(
     filtered = _apply_excludes(after_where, exclude)
     terms = parse_weights(weights) if weights else []
     parsed_limits = _parse_limits(limits)
-    scores, _ = score_rows_normalized(filtered, terms, norm=norm_mode)
+    scores, item_breakdowns = score_rows_normalized(filtered, terms, norm=norm_mode)
 
     if not filtered:
         diag = (
@@ -694,6 +727,30 @@ def solve_basket(
         sel_items = [filtered[idx] for idx, _ in sig]
         sel_counts = [qty for _, qty in sig]
         sel_scores = [scores[idx] for idx, _ in sig]
+        agg_bd: List[TermBreakdown] = []
+        if terms:
+            total_qty = max(1, sum(sel_counts))
+            for t_idx, term in enumerate(terms):
+                raw_sum = 0.0
+                has_raw = False
+                norm_sum = 0.0
+                contrib_sum = 0.0
+                for idx, qty in sig:
+                    bd_term = item_breakdowns[idx][t_idx]
+                    if bd_term.raw_value is not None:
+                        raw_sum += bd_term.raw_value * qty
+                        has_raw = True
+                    norm_sum += bd_term.normalized * qty
+                    contrib_sum += bd_term.contribution * qty
+                agg_bd.append(
+                    TermBreakdown(
+                        expression=term.expression,
+                        weight=term.weight,
+                        raw_value=round(raw_sum, 4) if has_raw else None,
+                        normalized=round(norm_sum / total_qty, 4),
+                        contribution=round(contrib_sum, 2),
+                    )
+                )
         solutions.append(
             BasketSolution(
                 items=sel_items,
@@ -702,6 +759,7 @@ def solve_basket(
                 mean_score=round(mean_u, 2),
                 metrics=metrics,
                 item_scores=sel_scores,
+                breakdown=agg_bd,
             )
         )
 
@@ -714,6 +772,9 @@ def solve_basket(
         "nodes_explored": nodes,
         "truncated": truncated,
     }
+    warns = _warn_unknown_terms(terms, filtered)
+    if warns:
+        meta["warnings"] = warns
     if not solutions:
         reasons: List[str] = []
         if m == 0:
@@ -1659,4 +1720,124 @@ def analyze_sensitivity(
         "closest_challenger": closest,
         "weight_perturbations": weight_perts,
         "limit_perturbations": limit_perts,
+    }
+
+
+def compute_pareto_frontier(
+    mode: str,
+    *,
+    rows: Optional[Sequence[Dict[str, Any]]] = None,
+    slot_pools: Optional[Dict[str, Sequence[Dict[str, Any]]]] = None,
+    weights: str | Dict[str, Any] | Sequence[str] = "",
+    cost_expr: str = "price",
+    budgets: Optional[Sequence[float]] = None,
+    steps: int = 5,
+    limits: Optional[Sequence[str | LimitSpec]] = None,
+    rules: Optional[Sequence[str | RuleSpec]] = None,
+    formulas: Optional[Sequence[str] | Dict[str, str]] = None,
+    where: Optional[Sequence[str]] = None,
+    norm: str = DEFAULT_NORM_MODE,
+    max_per_item: int = 1,
+    qty_field: Optional[str] = None,
+    pin: Optional[Dict[str, str] | Sequence[str]] = None,
+    exclude: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Sweeps a cost budget across `budgets` (or `steps` evenly spaced points) and extracts
+    non-dominated cost-vs-score Pareto frontier solutions for `rank`, `basket`, or `solve`.
+    """
+    eff_mode = (mode or "solve").strip().lower()
+    norm_mode = validate_norm_mode(norm)
+    cost_compiled = SafeExpression(cost_expr)
+    base_limits = _parse_limits(limits)
+    # Strip existing upper-bound limits matching cost_expr so the sweep controls that axis
+    other_limits = [
+        lim for lim in base_limits
+        if not (lim.agg == "sum" and lim.op in ("<=", "<") and (lim.inner_expr or "").strip() == cost_expr.strip())
+    ]
+
+    budget_points: List[float] = [float(b) for b in (budgets or [])]
+    if not budget_points:
+        n_steps = max(2, int(steps))
+        if eff_mode == "solve":
+            pools = slot_pools or {}
+            mins = []
+            maxs = []
+            for s_rows in pools.values():
+                vals = [to_number(cost_compiled.evaluate(r)) for r in s_rows]
+                fin = [v for v in vals if v is not None and v >= 0]
+                if fin:
+                    mins.append(min(fin))
+                    maxs.append(max(fin))
+            lo = sum(mins) if mins else 0.0
+            hi = sum(maxs) if maxs else 100.0
+        elif eff_mode == "basket":
+            vals = sorted(v for v in (to_number(cost_compiled.evaluate(r)) for r in (rows or [])) if v is not None and v > 0)
+            lo = vals[0] if vals else 0.0
+            hi = sum(vals[: min(len(vals), 6)]) if vals else 100.0
+        else:
+            vals = sorted(v for v in (to_number(cost_compiled.evaluate(r)) for r in (rows or [])) if v is not None and v >= 0)
+            lo = vals[0] if vals else 0.0
+            hi = vals[-1] if vals else 100.0
+        for lim in base_limits:
+            if lim.agg == "sum" and lim.op in ("<=", "<") and (lim.inner_expr or "").strip() == cost_expr.strip():
+                hi = min(hi, lim.rhs) if hi > lo else lim.rhs
+        if hi <= lo:
+            budget_points = [round(lo, 2)]
+        else:
+            budget_points = [round(lo + (hi - lo) * (i / (n_steps - 1)), 2) for i in range(n_steps)]
+
+    raw_points: List[Dict[str, Any]] = []
+    for cap in sorted(set(budget_points)):
+        if eff_mode == "rank":
+            extra_where = list(where or []) + [f"{cost_expr} <= {cap}"]
+            res, _ = solve_rank(rows=rows or [], weights=weights, formulas=formulas, where=extra_where, top_n=1, norm=norm_mode, exclude=exclude)
+            if not res:
+                continue
+            top = res[0]
+            actual_cost = to_number(cost_compiled.evaluate(top.row)) or cap
+            raw_points.append({"budget": cap, "cost": round(actual_cost, 2), "score": top.score, "label": _row_display_label(top.row), "solution": top.to_dict()})
+        elif eff_mode == "basket":
+            pin_list = list(pin.values()) if isinstance(pin, dict) else (list(pin) if pin else None)
+            lim_list = list(other_limits) + [f"sum({cost_expr}) <= {cap}"]
+            res, _ = solve_basket(
+                rows=rows or [], weights=weights, limits=lim_list, formulas=formulas, where=where,
+                top_n=1, max_per_item=max_per_item, qty_field=qty_field, norm=norm_mode, pin=pin_list, exclude=exclude,
+            )
+            if not res:
+                continue
+            top_b = res[0]
+            actual_cost = sum((to_number(cost_compiled.evaluate(it)) or 0.0) * cnt for it, cnt in zip(top_b.items, top_b.counts))
+            lbl, sc = _winner_summary("basket", [top_b])
+            raw_points.append({"budget": cap, "cost": round(actual_cost, 2), "score": sc, "label": lbl, "solution": top_b.to_dict()})
+        else:
+            lim_list = list(other_limits) + [f"sum({cost_expr}) <= {cap}"]
+            res, _ = solve_sets(
+                slot_pools=slot_pools or {}, weights=weights, limits=lim_list, rules=rules,
+                formulas=formulas, where=where, top_n=1, norm=norm_mode, pin=pin, exclude=exclude,
+            )
+            if not res:
+                continue
+            top_s = res[0]
+            actual_cost = sum(to_number(cost_compiled.evaluate(r)) or 0.0 for r in top_s.slots.values())
+            lbl, sc = _winner_summary("solve", [top_s])
+            raw_points.append({"budget": cap, "cost": round(actual_cost, 2), "score": sc, "label": lbl, "solution": top_s.to_dict()})
+
+    # Filter to non-dominated frontier: strictly improving score as cost rises, deduplicating identical labels
+    frontier: List[Dict[str, Any]] = []
+    best_score_so_far = -1e18
+    seen_labels: Set[str] = set()
+    for pt in sorted(raw_points, key=lambda x: (x["cost"], -(x["score"] or 0.0))):
+        sc = float(pt["score"] or 0.0)
+        lbl = str(pt["label"] or "")
+        if sc > best_score_so_far + 1e-6 and lbl not in seen_labels:
+            frontier.append(pt)
+            best_score_so_far = sc
+            seen_labels.add(lbl)
+
+    return {
+        "mode": eff_mode,
+        "norm": norm_mode,
+        "cost_expr": cost_expr,
+        "frontier": frontier,
     }

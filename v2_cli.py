@@ -13,7 +13,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_from_source, enrich_rows, infer_default_match, parse_match_expr
-from solver_engine import BasketSolution, RankedItem, SetSolution, analyze_sensitivity, solve_basket, solve_rank, solve_sets
+from solver_engine import (
+    BasketSolution,
+    RankedItem,
+    SetSolution,
+    analyze_sensitivity,
+    compute_pareto_frontier,
+    solve_basket,
+    solve_rank,
+    solve_sets,
+)
 from sources.base import SourceSchema, TableSchema
 from sources.registry import open_source
 
@@ -609,6 +618,8 @@ def run_basket(argv: List[str]) -> None:
         for it, cnt, sc in zip(sol.items, sol.counts, sol.item_scores):
             qty_tag = f" x{cnt}" if cnt > 1 else ""
             print(f"    • [{sc:5.1f}] {_row_label(it)}{qty_tag}")
+        if args.explain and sol.breakdown:
+            _print_breakdown(sol.breakdown)
         print()
 
 
@@ -772,6 +783,12 @@ def _print_preset_execution(res: Dict[str, Any], explain: bool) -> None:
             for it in sol["items"]:
                 qty_tag = f" x{it['count']}" if it["count"] > 1 else ""
                 print(f"    • [{it['item_score']:5.1f}] {_row_label(it['row'])}{qty_tag}")
+            if explain and sol.get("breakdown"):
+                parts = [
+                    f"{b['expression']}[raw={b['raw_value']}, n={b['normalized']:.2f}, w={b['weight']:+g} -> +{b['contribution']:.1f}]"
+                    for b in sol["breakdown"]
+                ]
+                print(f"      explain: {' | '.join(parts)}")
     else:
         for idx, sol in enumerate(results, 1):
             lim_str = ", ".join(f"{k} => {v:g}" for k, v in (sol.get("metrics") or {}).items())
@@ -957,6 +974,136 @@ def run_sensitivity(argv: List[str]) -> None:
         for lp in report["limit_perturbations"]:
             delta_s = f"{lp['score_delta']:+.1f}" if lp.get("score_delta") is not None else "infeasible"
             print(f"    • {lp['adjusted_limit']:<28} -> score {lp['score']} ({delta_s}) {'[CHANGED]' if lp['changed'] else ''}")
+    print()
+
+
+def run_frontier(argv: List[str]) -> None:
+    """`ks frontier` — sweep a cost budget to compute the Pareto cost-vs-score frontier."""
+    from preset_loader import resolve_preset
+
+    parser = argparse.ArgumentParser(
+        prog=f"{get_cli_prog()} frontier",
+        description="Compute the non-dominated cost-vs-score Pareto frontier across budgets.",
+    )
+    parser.add_argument("target", help="Preset name/path or data source (.db/.csv/.json)")
+    parser.add_argument("--profile", "-P", default=None, help="Preset profile name")
+    parser.add_argument("--mode", "-m", choices=["rank", "basket", "solve"], default=None, help="Optimization mode")
+    parser.add_argument("--table", "-t", default=None, help="Table/collection name")
+    parser.add_argument("--tables", default=None, help="Comma-separated tables for multi-slot solve")
+    parser.add_argument("--cost", default="price", help="Cost column/expression to sweep (default: price)")
+    parser.add_argument("--budgets", default=None, help="Comma-separated budget points, e.g. '500,700,900,1100'")
+    parser.add_argument("--steps", type=int, default=5, help="Auto-spaced budget steps when --budgets omitted (default: 5)")
+    parser.add_argument("--limit", "-l", action="append", default=[], help="Additional aggregate limits")
+    parser.add_argument("--rule", "-r", action="append", default=[], help="Cross-slot rules")
+    parser.add_argument("--pin", action="append", default=[], help="Pin item ('slot=pattern' or 'pattern')")
+    _add_common_solve_flags(parser, default_top=5)
+    args = parser.parse_args(argv)
+    _apply_prefs(args)
+
+    budgets = [float(x.strip()) for x in args.budgets.split(",") if x.strip()] if args.budgets else None
+
+    p_cand = Path(args.target).expanduser()
+    is_raw = p_cand.is_file() and p_cand.suffix.lower() in (".db", ".sqlite", ".sqlite3", ".csv", ".tsv", ".jsonl", ".ndjson")
+    report: Optional[Dict[str, Any]] = None
+    if not is_raw and args.target != "-":
+        try:
+            cfg = resolve_preset(args.target)
+            _, prof = cfg.resolve_profile(args.profile)
+            eff_mode = args.mode or prof.get("mode") or cfg.mode
+            pools = cfg.load_slots()
+            merged_w = dict(prof.get("weights") or {})
+            if args.prefer:
+                from formula_engine import parse_weights
+
+                for wt in parse_weights(args.prefer):
+                    merged_w[wt.expression] = wt.weight
+            merged_f: List[str] = (
+                [f"{k} = {v}" for k, v in cfg.formulas.items()]
+                if isinstance(cfg.formulas, dict)
+                else list(cfg.formulas or [])
+            ) + list(args.formula)
+            merged_where = list(cfg.where) + list(prof.get("where") or []) + list(args.where)
+            merged_limits = list(args.limit) if args.limit else list(prof.get("limits") or cfg.limits)
+            merged_rules = list(cfg.rules) + list(prof.get("rules") or []) + list(args.rule)
+            first_rows = next(iter(pools.values()), [])
+            report = compute_pareto_frontier(
+                eff_mode,
+                rows=first_rows if eff_mode in ("rank", "basket") else None,
+                slot_pools=pools if eff_mode == "solve" else None,
+                weights=merged_w,
+                cost_expr=args.cost,
+                budgets=budgets,
+                steps=args.steps,
+                limits=merged_limits,
+                rules=merged_rules,
+                formulas=merged_f,
+                where=merged_where,
+                norm=args.norm or cfg.norm,
+                max_per_item=cfg.max_per_item,
+                qty_field=cfg.qty_field,
+                pin=args.pin or None,
+                exclude=args.exclude or None,
+            )
+        except Exception:
+            report = None
+
+    if report is None:
+        src = open_source(args.target)
+        schema = src.inspect()
+        tables = [t.strip() for t in args.tables.split(",") if t.strip()] if args.tables else schema.table_names()
+        eff_mode = args.mode or ("solve" if len(tables) > 1 and not args.table else "rank")
+        if eff_mode == "solve":
+            pools = {t: src.load_rows(table=t) for t in tables}
+            report = compute_pareto_frontier(
+                "solve",
+                slot_pools=pools,
+                weights=args.prefer,
+                cost_expr=args.cost,
+                budgets=budgets,
+                steps=args.steps,
+                limits=args.limit,
+                rules=args.rule,
+                formulas=args.formula,
+                where=args.where,
+                norm=args.norm or "robust",
+                pin=args.pin or None,
+                exclude=args.exclude or None,
+            )
+        else:
+            rows = src.load_rows(table=args.table)
+            ref_specs = [
+                _parse_ref_spec(r, args.match, args.strategy, args.alias, args.on_unmatched)
+                for r in args.ref
+            ]
+            if ref_specs:
+                rows = _enrich_rows_with_refs(rows, ref_specs)
+            report = compute_pareto_frontier(
+                eff_mode,
+                rows=rows,
+                weights=args.prefer,
+                cost_expr=args.cost,
+                budgets=budgets,
+                steps=args.steps,
+                limits=args.limit,
+                formulas=args.formula,
+                where=args.where,
+                norm=args.norm or "robust",
+                pin=args.pin or None,
+                exclude=args.exclude or None,
+            )
+
+    if args.json:
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return
+
+    pts = report.get("frontier") or []
+    print(f"\nPareto Tradeoff Frontier [mode={report['mode']}, cost={report['cost_expr']}, norm={report['norm']}]")
+    print("═" * 84)
+    if not pts:
+        print("  (No feasible frontier points found.)\n")
+        return
+    for pt in pts:
+        print(f"  {report['cost_expr']}={pt['cost']:>7.2f} (cap={pt['budget']:g}) │ Score: {pt['score']:>5.1f} │ {pt['label']}")
     print()
 
 
