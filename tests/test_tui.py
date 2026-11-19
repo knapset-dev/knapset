@@ -304,6 +304,41 @@ class TestSharedProfiles(unittest.TestCase):
                 with self.assertRaises(KeyError):
                     e.apply_shared_profile("does_not_exist")
 
+    def test_apply_shared_profile_skips_filters_and_rules_using_missing_columns(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db_rich = root / "rich.db"
+            db_slim = root / "slim.db"
+            for dbp, has_extra in ((db_rich, True), (db_slim, False)):
+                conn = sqlite3.connect(str(dbp))
+                if has_extra:
+                    conn.execute("CREATE TABLE cpu (name TEXT, socket TEXT, is_bundle INTEGER, price REAL)")
+                    conn.execute("CREATE TABLE mobo (name TEXT, socket TEXT, is_bundle INTEGER, price REAL)")
+                    conn.execute("INSERT INTO cpu VALUES ('R5', 'AM4', 0, 100)")
+                    conn.execute("INSERT INTO mobo VALUES ('B550', 'AM4', 0, 90)")
+                else:
+                    conn.execute("CREATE TABLE cpu (name TEXT, socket TEXT, price REAL)")
+                    conn.execute("CREATE TABLE mobo (name TEXT, socket TEXT, price REAL)")
+                    conn.execute("INSERT INTO cpu VALUES ('R5', 'AM4', 100)")
+                    conn.execute("INSERT INTO mobo VALUES ('B550', 'AM4', 90)")
+                conn.commit()
+                conn.close()
+
+            with patch.dict(os.environ, {"KNAPSET_HOME": str(root / "home")}):
+                s1 = TuiSessionState()
+                s1.load_from_source(str(db_rich))
+                s1.add_where("is_bundle == 0")
+                s1.add_rule("cpu.socket == mobo.socket")
+                s1.save_preference_profile("rich_prof")
+
+                s2 = TuiSessionState()
+                s2.load_from_source(str(db_slim))
+                skipped = s2.apply_shared_profile("rich_prof", store=False)
+                self.assertIn("is_bundle", skipped)
+                self.assertEqual(s2.where, [])
+                self.assertEqual(s2.rules, ["cpu.socket == mobo.socket"])
+                self.assertEqual(len(s2.results), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

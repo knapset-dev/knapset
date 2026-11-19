@@ -12,6 +12,7 @@ Knapset v2 Interactive Terminal Studio (`ks tui`) — Antigravity (`agy`) style.
 from __future__ import annotations
 
 import argparse
+import ast
 from dataclasses import dataclass, field
 from pathlib import Path
 import queue
@@ -23,7 +24,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import LimitSpec, RuleSpec, SafeExpression, parse_formulas, parse_weights
+from formula_engine import LimitSpec, RuleSpec, SafeExpression, _SAFE_FUNCS, _extract_attr_chain, parse_formulas, parse_weights
 from preset_loader import (
     PresetConfig,
     discover_presets,
@@ -613,19 +614,77 @@ class TuiSessionState:
 
         known = set(self.available_columns)
         known.update(c.split(".", 1)[1] for c in self.available_columns if "." in c)
-        for f_str in data.get("formulas") or []:
-            if "=" in str(f_str):
-                known.add(str(f_str).split("=", 1)[0].strip())
+        slot_names_set = set(self.sources.keys())
         skipped: List[str] = []
+
+        def _unknown_refs_in_expr(expr_text: str) -> List[str]:
+            try:
+                compiled = SafeExpression(expr_text)
+            except Exception:
+                return []
+            missing: List[str] = []
+            for node in ast.walk(compiled.tree):
+                if isinstance(node, ast.Attribute):
+                    chain = _extract_attr_chain(node)
+                    dotted = ".".join(chain)
+                    if chain[0] in slot_names_set:
+                        if len(chain) >= 2 and dotted not in known:
+                            missing.append(dotted)
+                    elif dotted not in known and chain[0] not in _SAFE_FUNCS:
+                        missing.append(dotted)
+            for root in compiled.roots_referenced:
+                if root not in slot_names_set and root not in known and root not in _SAFE_FUNCS:
+                    missing.append(root)
+            return missing
+
+        def _keep_formulas(raw_list: Sequence[Any]) -> List[str]:
+            kept: List[str] = []
+            for f_str in raw_list:
+                fs = str(f_str).strip()
+                if "=" in fs:
+                    fname, rhs = fs.split("=", 1)
+                    if _unknown_refs_in_expr(rhs):
+                        skipped.append(fname.strip())
+                        continue
+                    known.add(fname.strip())
+                    kept.append(fs)
+            return kept
+
+        def _keep_exprs(raw_list: Sequence[Any], is_limit: bool = False) -> List[str]:
+            kept: List[str] = []
+            for item in raw_list:
+                text = str(item).strip()
+                check_expr = text
+                if is_limit:
+                    try:
+                        check_expr = LimitSpec.parse(text).inner_expr or ""
+                    except Exception:
+                        pass
+                missing = _unknown_refs_in_expr(check_expr) if check_expr else []
+                if missing:
+                    skipped.extend(m for m in missing if m not in skipped)
+                    continue
+                kept.append(text)
+            return kept
+
+        kept_formulas = _keep_formulas(data.get("formulas") or [])
+        skipped_weights: List[str] = []
         weights: Dict[str, float] = {}
         for expr, w in (data.get("weights") or {}).items():
             e = str(expr).strip()
-            if re.fullmatch(r"[A-Za-z_][\w.]*", e) and e not in known:
-                skipped.append(e)
+            if (re.fullmatch(r"[A-Za-z_][\w.]*", e) and e not in known) or _unknown_refs_in_expr(e):
+                skipped_weights.append(e)
                 continue
             weights[e] = float(w)
+        for sw in skipped_weights:
+            if sw not in skipped:
+                skipped.append(sw)
 
         prof = dict(data)
+        prof["formulas"] = kept_formulas
+        prof["where"] = _keep_exprs(data.get("where") or [])
+        prof["limits"] = _keep_exprs(data.get("limits") or [], is_limit=True)
+        prof["rules"] = _keep_exprs(data.get("rules") or [])
         prof["weights"] = weights
         if prof.get("mode") == "solve" and len(self.sources) < 2:
             prof["mode"] = self.mode
@@ -1257,13 +1316,32 @@ def run_curses_tui(state: TuiSessionState) -> None:
             return
 
         slot_cols = [c.split(".", 1)[-1] for c in state.available_columns if c.startswith(f"{target_slot}.") or "." not in c]
+        ref_tbl_schema = schema.get_table(ref_tbl) if ref_tbl else (schema.tables[0] if schema.tables else None)
+        ref_cols = ref_tbl_schema.column_names() if ref_tbl_schema else []
+        match_suggestions: List[str] = []
+        default_match = "title~model"
+        if "model_key" in slot_cols and "model" in ref_cols:
+            default_match = "model_key=model"
+            match_suggestions.extend(["model_key=model", "model_key~model"])
+        elif "chipset" in slot_cols and "chipset" in ref_cols:
+            default_match = "chipset=chipset"
+            match_suggestions.extend(["chipset=chipset", "title~chipset"])
+        elif "chipset" in ref_cols:
+            default_match = "title~chipset"
+            match_suggestions.append("title~chipset")
+        if "title" in slot_cols and "model" in ref_cols:
+            match_suggestions.append("title~model")
+        for c in ref_cols[:6]:
+            tag = f"ref.{c}"
+            if tag not in match_suggestions:
+                match_suggestions.append(tag)
         match_in = _modal_text_input(
             stdscr,
             "Match Rule",
-            "How to match left_col~right_col ('~' fuzzy token, '=' exact):",
-            initial="title~model",
-            suggestions=slot_cols[:12],
-            examples=["title~model", "sku=id"],
+            f"Match {target_slot}.col ~ {ref_tbl or Path(ref_path).name}.col ('~' token, '=' exact):",
+            initial=default_match,
+            suggestions=match_suggestions or slot_cols[:10],
+            examples=["model_key=model", "title~model", "title~chipset"],
         )
         if not match_in:
             return
