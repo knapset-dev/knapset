@@ -24,15 +24,16 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import LimitSpec, RuleSpec, SafeExpression, _SAFE_FUNCS, _extract_attr_chain, filter_rows, parse_formulas, parse_weights
+from formula_engine import LimitSpec, RuleSpec, SafeExpression, filter_rows, parse_formulas, parse_weights
 from preset_loader import (
     PresetConfig,
     discover_presets,
+    filter_profile_for_columns,
     get_user_presets_dir,
     get_user_profiles_dir,
     list_shared_profiles,
-    read_profile_file,
     resolve_preset,
+    resolve_shared_profile,
     save_preset,
     save_shared_profile,
 )
@@ -752,92 +753,15 @@ class TuiSessionState:
         file) onto the *currently open* DBs. Returns a list of weight expressions skipped because their
         column does not exist in this DB.
         """
-        p = Path(name_or_path).expanduser()
-        if p.is_file():
-            name, data = read_profile_file(p, profile_name)
-        else:
-            lib = list_shared_profiles()
-            key = name_or_path.strip().lower()
-            if key not in lib:
-                raise KeyError(f"Saved profile '{name_or_path}' not found in {get_user_profiles_dir()}")
-            name, data = key, lib[key]
+        name, data = resolve_shared_profile(name_or_path, profile_name)
         if not self.sources:
             raise ValueError("Open a database first, then apply a saved profile.")
 
-        known = set(self.available_columns)
-        known.update(c.split(".", 1)[1] for c in self.available_columns if "." in c)
-        slot_names_set = set(self.sources.keys())
-        skipped: List[str] = []
-
-        def _unknown_refs_in_expr(expr_text: str) -> List[str]:
-            try:
-                compiled = SafeExpression(expr_text)
-            except Exception:
-                return []
-            missing: List[str] = []
-            for node in ast.walk(compiled.tree):
-                if isinstance(node, ast.Attribute):
-                    chain = _extract_attr_chain(node)
-                    dotted = ".".join(chain)
-                    if chain[0] in slot_names_set:
-                        if len(chain) >= 2 and dotted not in known:
-                            missing.append(dotted)
-                    elif dotted not in known and chain[0] not in _SAFE_FUNCS:
-                        missing.append(dotted)
-            for root in compiled.roots_referenced:
-                if root not in slot_names_set and root not in known and root not in _SAFE_FUNCS:
-                    missing.append(root)
-            return missing
-
-        def _keep_formulas(raw_list: Sequence[Any]) -> List[str]:
-            kept: List[str] = []
-            for f_str in raw_list:
-                fs = str(f_str).strip()
-                if "=" in fs:
-                    fname, rhs = fs.split("=", 1)
-                    if _unknown_refs_in_expr(rhs):
-                        skipped.append(fname.strip())
-                        continue
-                    known.add(fname.strip())
-                    kept.append(fs)
-            return kept
-
-        def _keep_exprs(raw_list: Sequence[Any], is_limit: bool = False) -> List[str]:
-            kept: List[str] = []
-            for item in raw_list:
-                text = str(item).strip()
-                check_expr = text
-                if is_limit:
-                    try:
-                        check_expr = LimitSpec.parse(text).inner_expr or ""
-                    except Exception:
-                        pass
-                missing = _unknown_refs_in_expr(check_expr) if check_expr else []
-                if missing:
-                    skipped.extend(m for m in missing if m not in skipped)
-                    continue
-                kept.append(text)
-            return kept
-
-        kept_formulas = _keep_formulas(data.get("formulas") or [])
-        skipped_weights: List[str] = []
-        weights: Dict[str, float] = {}
-        for expr, w in (data.get("weights") or {}).items():
-            e = str(expr).strip()
-            if (re.fullmatch(r"[A-Za-z_][\w.]*", e) and e not in known) or _unknown_refs_in_expr(e):
-                skipped_weights.append(e)
-                continue
-            weights[e] = float(w)
-        for sw in skipped_weights:
-            if sw not in skipped:
-                skipped.append(sw)
-
-        prof = dict(data)
-        prof["formulas"] = kept_formulas
-        prof["where"] = _keep_exprs(data.get("where") or [])
-        prof["limits"] = _keep_exprs(data.get("limits") or [], is_limit=True)
-        prof["rules"] = _keep_exprs(data.get("rules") or [])
-        prof["weights"] = weights
+        prof, skipped = filter_profile_for_columns(
+            data,
+            available_columns=self.available_columns,
+            slot_names=list(self.sources.keys()),
+        )
         if prof.get("mode") == "solve" and len(self.sources) < 2:
             prof["mode"] = self.mode
         snapshot = (self.profile, self.mode, list(self.weights), dict(self.weight_dirs),

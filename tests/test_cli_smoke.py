@@ -52,10 +52,13 @@ class TestCliSmokeV2(unittest.TestCase):
             names,
             [
                 "knapset_inspect_source",
+                "knapset_compare_sources",
                 "knapset_rank_items",
                 "knapset_solve_basket",
                 "knapset_solve_sets",
                 "knapset_list_presets",
+                "knapset_prefs",
+                "knapset_registry",
             ],
         )
 

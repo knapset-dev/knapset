@@ -12,7 +12,7 @@ import sys
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app_paths import get_cli_prog
-from enricher import MatchSpec, enrich_from_source, enrich_rows, parse_match_expr
+from enricher import MatchSpec, enrich_from_source, enrich_rows, infer_default_match, parse_match_expr
 from solver_engine import BasketSolution, RankedItem, SetSolution, solve_basket, solve_rank, solve_sets
 from sources.base import SourceSchema, TableSchema
 from sources.registry import open_source
@@ -27,19 +27,7 @@ def _is_cost_like(col_name: str) -> bool:
 
 def _infer_default_match(left_cols: List[str], right_cols: List[str]) -> Tuple[str, str, str]:
     """Picks a sensible default `(left_field, right_field, strategy)` when --match is omitted."""
-    left_low = {c.lower(): c for c in left_cols}
-    right_low = {c.lower(): c for c in right_cols}
-    for common in ("id", "sku", "part_number", "code", "model", "name"):
-        if common in left_low and common in right_low:
-            strat = "exact" if common in ("id", "sku", "part_number", "code") else "token"
-            return left_low[common], right_low[common], strat
-    for lc in ("title", "name", "listing", "description", "label"):
-        for rc in ("model", "name", "title", "pattern", "label"):
-            if lc in left_low and rc in right_low:
-                return left_low[lc], right_low[rc], "token"
-    if left_cols and right_cols:
-        return left_cols[0], right_cols[0], "token"
-    raise ValueError("Could not infer match columns; specify --match '<left>~<right>' or '<left>=<right>'.")
+    return infer_default_match(left_cols, right_cols)
 
 
 def _build_starter_preset(
@@ -451,18 +439,12 @@ def _apply_prefs(args: argparse.Namespace) -> None:
     ref = getattr(args, "prefs", None)
     if not ref:
         return
-    from preset_loader import list_shared_profiles, read_profile_file
+    from preset_loader import resolve_shared_profile
 
-    path = Path(ref).expanduser()
-    if path.is_file():
-        _name, data = read_profile_file(path)
-    else:
-        lib = list_shared_profiles()
-        key = ref.strip().lower()
-        if key not in lib:
-            avail = ", ".join(lib) or "none saved yet"
-            raise SystemExit(f"error: saved profile '{ref}' not found (available: {avail}). See `{get_cli_prog()} prefs list`.")
-        data = lib[key]
+    try:
+        _name, data = resolve_shared_profile(ref)
+    except (FileNotFoundError, KeyError) as exc:
+        raise SystemExit(f"error: {exc} See `{get_cli_prog()} prefs list`.") from exc
     if not args.prefer and data.get("weights"):
         args.prefer = [_weights_to_prefer(data["weights"])]
     for attr, key in (("formula", "formulas"), ("where", "where"), ("limit", "limits"), ("rule", "rules")):
@@ -1025,13 +1007,13 @@ def run_prefs(argv: List[str]) -> None:
             out.replace(target)
         print(f"[OK] Exported '{args.name}' -> {target}")
     elif args.subcommand == "remove":
-        _get(args.name)
-        path = get_user_profiles_dir() / f"{args.name.strip().lower()}.json"
-        if path.is_file():
-            path.unlink()
+        from preset_loader import delete_shared_profile
+
+        try:
+            delete_shared_profile(args.name)
             print(f"[OK] Removed '{args.name}'")
-        else:
-            raise SystemExit(f"error: '{args.name}' is not a standalone file in {get_user_profiles_dir()}.")
+        except (KeyError, FileNotFoundError) as exc:
+            raise SystemExit(f"error: {exc}") from exc
 
 
 def run_reg(argv: List[str]) -> None:

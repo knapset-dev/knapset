@@ -14,18 +14,51 @@ import io
 import json
 import sys
 from contextlib import redirect_stdout
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from app_paths import get_cli_prog
-from enricher import MatchSpec, enrich_rows, parse_match_expr
-from preset_loader import discover_presets, resolve_preset
+from enricher import collect_ref_specs, compare_sources, enrich_slot_pools
+from formula_engine import parse_weights
+from marketplace.client import MarketplaceClient
+from preset_loader import (
+    delete_shared_profile,
+    discover_presets,
+    list_shared_profiles,
+    read_profile_file,
+    resolve_prefs_for_pools,
+    resolve_preset,
+    resolve_shared_profile,
+    save_shared_profile,
+)
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.registry import inspect_source, open_source
+from theme_config import (
+    discover_themes,
+    load_active_theme,
+    reset_active_theme,
+    set_active_theme,
+)
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {
     "name": "knapset-mcp",
     "version": "2.0.0",
+}
+
+_REF_ITEM_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "source": {"type": "string", "description": "Reference DB/file path."},
+        "table": {"type": "string", "description": "Optional table inside Reference DB."},
+        "query": {"type": "string", "description": "Optional read-only SQL SELECT/WITH query."},
+        "match": {"type": "string", "description": "Match rule e.g. 'title~model' (token) or 'sku=id' (exact)."},
+        "strategy": {"type": "string", "enum": ["exact", "token", "regex"], "description": "Match strategy override."},
+        "alias": {"type": "string", "description": "Attached reference field alias (default: 'ref')."},
+        "on_unmatched": {"type": "string", "enum": ["drop", "keep"], "description": "Unmatched policy (default: 'drop')."},
+        "slot": {"type": "string", "description": "Optional target slot name (for multi-slot solve)."},
+    },
+    "required": ["source"],
 }
 
 MCP_TOOLS: List[Dict[str, Any]] = [
@@ -42,8 +75,29 @@ MCP_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "knapset_compare_sources",
+        "description": "Compare a primary data source against a Reference DB and report match rate, unmatched samples, and enriched preview rows.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source": {"type": "string", "description": "Primary candidate data source path/URI."},
+                "table": {"type": "string", "description": "Optional primary table/collection name."},
+                "query": {"type": "string", "description": "Optional read-only SQL SELECT/WITH query on primary SQLite source."},
+                "ref_source": {"type": "string", "description": "Reference DB/file path/URI."},
+                "ref_table": {"type": "string", "description": "Optional Reference DB table/collection name."},
+                "ref_query": {"type": "string", "description": "Optional read-only SQL SELECT/WITH query on Reference SQLite source."},
+                "match": {"type": "string", "description": "Match rule e.g. 'title~model' (token) or 'sku=id' (exact). Inferred if omitted."},
+                "strategy": {"type": "string", "enum": ["exact", "token", "regex"], "description": "Matching strategy override."},
+                "alias": {"type": "string", "description": "Attached field alias (default: 'ref')."},
+                "on_unmatched": {"type": "string", "enum": ["keep", "drop"], "description": "Keep or drop unmatched rows (default: 'keep')."},
+                "limit": {"type": "integer", "description": "Max preview rows to return (default: 15)."},
+            },
+            "required": ["source", "ref_source"],
+        },
+    },
+    {
         "name": "knapset_rank_items",
-        "description": "Rank rows from a table/file using signed weights (positive maximizes, negative minimizes), optional Reference DB enrichment, derived formulas, and filters.",
+        "description": "Rank rows from a table/file using signed weights (positive maximizes, negative minimizes), optional Reference DB enrichment, saved prefs, derived formulas, and filters.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -53,8 +107,11 @@ MCP_TOOLS: List[Dict[str, Any]] = [
                 "ref_source": {"type": "string", "description": "Optional Reference DB path/URI to enrich rows."},
                 "ref_table": {"type": "string", "description": "Optional table inside Reference DB."},
                 "match": {"type": "string", "description": "Match rule e.g. 'title~model' (token) or 'sku=id' (exact)."},
+                "strategy": {"type": "string", "enum": ["exact", "token", "regex"], "description": "Match strategy override."},
                 "alias": {"type": "string", "description": "Attached reference field alias (default: 'ref')."},
                 "on_unmatched": {"type": "string", "enum": ["drop", "keep"], "description": "Policy for unmatched rows (default: 'drop')."},
+                "references": {"type": "array", "items": _REF_ITEM_SCHEMA, "description": "Optional list of Reference DB specs."},
+                "prefs": {"type": "string", "description": "Saved preference profile name or profile/preset file path; explicit args override."},
                 "formulas": {"type": "array", "items": {"type": "string"}, "description": "Derived formulas e.g. ['deal = (ref.msrp - price) / ref.msrp']."},
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Filter predicates e.g. ['price <= 600']."},
                 "weights": {"type": "string", "description": "Signed weights e.g. 'ref.score:+0.7, price:-0.3'."},
@@ -71,11 +128,21 @@ MCP_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "source": {"type": "string", "description": "Primary data source path/URI."},
                 "table": {"type": "string", "description": "Optional table/collection name."},
+                "query": {"type": "string", "description": "Optional read-only SQL SELECT/WITH query (SQLite only)."},
+                "ref_source": {"type": "string", "description": "Optional Reference DB path/URI to enrich rows."},
+                "ref_table": {"type": "string", "description": "Optional table inside Reference DB."},
+                "match": {"type": "string", "description": "Match rule e.g. 'title~model' (token) or 'sku=id' (exact)."},
+                "strategy": {"type": "string", "enum": ["exact", "token", "regex"], "description": "Match strategy override."},
+                "alias": {"type": "string", "description": "Attached reference field alias (default: 'ref')."},
+                "on_unmatched": {"type": "string", "enum": ["drop", "keep"], "description": "Policy for unmatched rows (default: 'drop')."},
+                "references": {"type": "array", "items": _REF_ITEM_SCHEMA, "description": "Optional list of Reference DB specs."},
+                "prefs": {"type": "string", "description": "Saved preference profile name or profile/preset file path; explicit args override."},
                 "weights": {"type": "string", "description": "Signed weights e.g. 'protein:+0.8, price:-0.2'."},
                 "limits": {"type": "array", "items": {"type": "string"}, "description": "Limits e.g. ['sum(price) <= 50', 'count <= 4']."},
                 "formulas": {"type": "array", "items": {"type": "string"}, "description": "Optional derived row formulas."},
                 "where": {"type": "array", "items": {"type": "string"}, "description": "Optional row filters."},
                 "max_per_item": {"type": "integer", "description": "Max quantity per row (default: 1)."},
+                "qty_field": {"type": "string", "description": "Optional row field capping per-item quantity."},
                 "top_n": {"type": "integer", "description": "Top basket solutions to return (default: 5)."},
             },
             "required": ["source"],
@@ -89,9 +156,18 @@ MCP_TOOLS: List[Dict[str, Any]] = [
             "properties": {
                 "preset": {"type": "string", "description": "Optional v2 preset path or installed name to execute with overrides."},
                 "profile": {"type": "string", "description": "Optional profile name inside preset."},
+                "mode": {"type": "string", "enum": ["rank", "basket", "solve"], "description": "Optional mode override when running a preset."},
                 "source": {"type": "string", "description": "Optional multi-table SQLite/JSON path (loads each table as a slot)."},
                 "tables": {"type": "array", "items": {"type": "string"}, "description": "Optional table subset from source."},
-                "slots": {"type": "object", "description": "Explicit mapping {slot_name: {source, table}} or {slot_name: [rows]}."},
+                "slots": {"type": "object", "description": "Explicit mapping {slot_name: {source, table, query}} or {slot_name: [rows]}."},
+                "ref_source": {"type": "string", "description": "Optional Reference DB path/URI to enrich slots."},
+                "ref_table": {"type": "string", "description": "Optional table inside Reference DB."},
+                "match": {"type": "string", "description": "Match rule e.g. 'title~model' or 'sku=id'."},
+                "strategy": {"type": "string", "enum": ["exact", "token", "regex"], "description": "Match strategy override."},
+                "alias": {"type": "string", "description": "Attached reference field alias (default: 'ref')."},
+                "on_unmatched": {"type": "string", "enum": ["drop", "keep"], "description": "Policy for unmatched rows (default: 'drop')."},
+                "references": {"type": "array", "items": _REF_ITEM_SCHEMA, "description": "Optional list of Reference DB specs."},
+                "prefs": {"type": "string", "description": "Saved preference profile name or profile/preset file path; explicit args override."},
                 "weights": {"type": "string", "description": "Signed weights (supports cross-slot exprs like 'cpu.score/gpu.score:-0.2')."},
                 "limits": {"type": "array", "items": {"type": "string"}, "description": "Aggregate limits e.g. ['sum(price) <= 950']."},
                 "rules": {"type": "array", "items": {"type": "string"}, "description": "Cross-slot AST rules e.g. ['cpu.socket == mobo.socket']."},
@@ -109,24 +185,194 @@ MCP_TOOLS: List[Dict[str, Any]] = [
             "properties": {},
         },
     },
+    {
+        "name": "knapset_prefs",
+        "description": "Manage saved DB-independent preference profiles (list, show, save, import, export, remove).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "show", "save", "import", "export", "remove"],
+                    "description": "Preference library action.",
+                },
+                "name": {"type": "string", "description": "Profile name (for show, save, import, export, remove)."},
+                "file": {"type": "string", "description": "File path (for import or export)."},
+                "profile": {"type": "string", "description": "Source profile name when importing from a multi-profile preset."},
+                "mode": {"type": "string", "enum": ["rank", "basket", "solve"], "description": "Default mode for save."},
+                "weights": {"type": "string", "description": "Signed weights e.g. 'score:+0.7, price:-0.3' (for save)."},
+                "formulas": {"type": "array", "items": {"type": "string"}, "description": "Derived formulas (for save)."},
+                "where": {"type": "array", "items": {"type": "string"}, "description": "Filter predicates (for save)."},
+                "limits": {"type": "array", "items": {"type": "string"}, "description": "Aggregate limits (for save)."},
+                "rules": {"type": "array", "items": {"type": "string"}, "description": "Cross-slot rules (for save)."},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "knapset_registry",
+        "description": "Search, inspect, install, verify, or remove knapset-registry presets/themes and manage active TUI/Studio themes.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": [
+                        "search",
+                        "info",
+                        "install",
+                        "list",
+                        "remove",
+                        "verify",
+                        "theme_list",
+                        "theme_show",
+                        "theme_use",
+                        "theme_reset",
+                    ],
+                    "description": "Registry or theme action.",
+                },
+                "target": {"type": "string", "description": "Registry item/bundle/theme name (e.g. 'pc_build', 'theme:nord', 'bundle:starter-presets')."},
+                "query": {"type": "string", "description": "Search filter query (for search)."},
+                "item_type": {"type": "string", "description": "Optional subsystem filter e.g. 'presets', 'themes' (for search)."},
+                "refresh": {"type": "boolean", "description": "Force refresh registry index."},
+                "use": {"type": "boolean", "description": "Activate theme immediately after install."},
+                "force": {"type": "boolean", "description": "Overwrite or force remove."},
+                "registry": {"type": "string", "description": "Optional local registry path or URL override."},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 
-def _maybe_enrich_single(rows: List[Dict[str, Any]], args: Dict[str, Any]) -> List[Dict[str, Any]]:
-    ref_source = args.get("ref_source")
-    if not ref_source or not rows:
-        return rows
-    ref_rows = open_source(str(ref_source)).load_rows(table=args.get("ref_table"))
-    match_expr = str(args.get("match") or "title~model")
-    lf, rf, inferred = parse_match_expr(match_expr)
-    spec = MatchSpec(
-        left_field=lf,
-        right_field=rf,
-        strategy=inferred or "token",
-        alias=str(args.get("alias") or "ref"),
-        on_unmatched=str(args.get("on_unmatched") or "drop"),
-    )
-    return enrich_rows(rows, ref_rows, spec).rows
+def _handle_prefs_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(args.get("action") or "").strip().lower()
+    lib = list_shared_profiles()
+
+    if action == "list":
+        return {"profiles": lib}
+    if action == "show":
+        name = str(args.get("name") or "")
+        _, data = resolve_shared_profile(name)
+        return {"name": name.strip().lower(), "profile": data}
+    if action == "save":
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise ValueError("'name' is required for prefs save.")
+        weights_raw = args.get("weights") or ""
+        weights = {t.expression: t.weight for t in parse_weights(weights_raw)} if weights_raw else {}
+        data = {
+            "mode": args.get("mode") or "rank",
+            "weights": weights,
+            "formulas": list(args.get("formulas") or []),
+            "where": list(args.get("where") or []),
+            "limits": list(args.get("limits") or []),
+            "rules": list(args.get("rules") or []),
+        }
+        path = save_shared_profile(name, data)
+        return {"saved": name.lower(), "path": str(path), "profile": data}
+    if action == "import":
+        file_path = str(args.get("file") or "").strip()
+        if not file_path:
+            raise ValueError("'file' is required for prefs import.")
+        parsed_name, data = read_profile_file(file_path, args.get("profile"))
+        target_name = str(args.get("name") or parsed_name)
+        path = save_shared_profile(target_name, data)
+        return {"imported": target_name.lower(), "path": str(path), "profile": data}
+    if action == "export":
+        name = str(args.get("name") or "").strip()
+        file_path = str(args.get("file") or "").strip()
+        if not name or not file_path:
+            raise ValueError("'name' and 'file' are required for prefs export.")
+        _, data = resolve_shared_profile(name)
+        target = Path(file_path).expanduser().resolve()
+        out = save_shared_profile(name, data, directory=target.parent)
+        if out != target:
+            out.replace(target)
+        return {"exported": name.lower(), "path": str(target)}
+    if action == "remove":
+        name = str(args.get("name") or "").strip()
+        if not name:
+            raise ValueError("'name' is required for prefs remove.")
+        removed = delete_shared_profile(name)
+        return {"removed": name.lower(), "path": str(removed)}
+    raise ValueError(f"Unsupported prefs action: '{action}'")
+
+
+def _handle_registry_tool(args: Dict[str, Any]) -> Dict[str, Any]:
+    action = str(args.get("action") or "").strip().lower()
+    if action == "theme_list":
+        active = load_active_theme()
+        themes = discover_themes()
+        return {
+            "active": active.name,
+            "themes": [
+                {
+                    "name": t.name,
+                    "title": t.title,
+                    "description": t.description,
+                    "active": t.name == active.name,
+                    "colors": t.colors,
+                }
+                for t in themes.values()
+            ],
+        }
+    if action == "theme_show":
+        active = load_active_theme()
+        return {"theme": active.to_dict()}
+    if action == "theme_use":
+        target = str(args.get("target") or "").strip()
+        if not target:
+            raise ValueError("'target' theme name or path is required for theme_use.")
+        theme, written = set_active_theme(target)
+        return {"active": theme.name, "path": str(written), "theme": theme.to_dict()}
+    if action == "theme_reset":
+        theme, written = reset_active_theme()
+        return {"active": theme.name, "path": str(written), "theme": theme.to_dict()}
+
+    client = MarketplaceClient(registry_url=args.get("registry"))
+    if action == "search":
+        res = client.search(
+            query=str(args.get("query") or ""),
+            subsystem=args.get("item_type"),
+            force_refresh=bool(args.get("refresh", False)),
+        )
+        return res
+    if action == "info":
+        target = str(args.get("target") or "").strip()
+        if not target:
+            raise ValueError("'target' is required for registry info.")
+        info = client.info(target, force_refresh=bool(args.get("refresh", False)))
+        if info is None:
+            raise KeyError(f"Registry item '{target}' not found.")
+        return info
+    if action == "install":
+        target = str(args.get("target") or "").strip()
+        if not target:
+            raise ValueError("'target' is required for registry install.")
+        ok, msg = client.install(
+            target,
+            force=bool(args.get("force", False)),
+            force_refresh=bool(args.get("refresh", False)),
+        )
+        out: Dict[str, Any] = {"ok": ok, "message": msg}
+        if ok and args.get("use"):
+            clean = target.split(":", 1)[-1]
+            if clean in discover_themes():
+                activated, _ = set_active_theme(clean)
+                out["active_theme"] = activated.name
+        return out
+    if action == "list":
+        return {"installed": client.list_installed()}
+    if action == "remove":
+        target = str(args.get("target") or "").strip()
+        if not target:
+            raise ValueError("'target' is required for registry remove.")
+        ok, msg = client.remove(target, force=bool(args.get("force", False)))
+        return {"ok": ok, "message": msg}
+    if action == "verify":
+        return {"report": client.verify(args.get("target"))}
+    raise ValueError(f"Unsupported registry action: '{action}'")
 
 
 def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -136,6 +382,21 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
     if name == "knapset_inspect_source":
         schema = inspect_source(str(args["source"]), sample_rows=int(args.get("sample_rows", 200)))
         return schema.to_dict()
+
+    if name == "knapset_compare_sources":
+        return compare_sources(
+            str(args["source"]),
+            str(args["ref_source"]),
+            table=args.get("table"),
+            query=args.get("query"),
+            ref_table=args.get("ref_table"),
+            ref_query=args.get("ref_query"),
+            match=args.get("match"),
+            strategy=args.get("strategy"),
+            alias=str(args.get("alias") or "ref"),
+            on_unmatched=str(args.get("on_unmatched") or "keep"),
+            limit=int(args.get("limit", 15)),
+        )
 
     if name == "knapset_list_presets":
         presets = discover_presets()
@@ -153,30 +414,49 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             ]
         }
 
+    if name == "knapset_prefs":
+        return _handle_prefs_tool(args)
+
+    if name == "knapset_registry":
+        return _handle_registry_tool(args)
+
     if name == "knapset_rank_items":
         rows = open_source(str(args["source"])).load_rows(table=args.get("table"), query=args.get("query"))
-        rows = _maybe_enrich_single(rows, args)
+        pools = {"_pool": rows}
+        ref_specs = collect_ref_specs(args)
+        if ref_specs:
+            enrich_slot_pools(pools, ref_specs)
+        merged, skipped = resolve_prefs_for_pools(args, pools)
         ranked, meta = solve_rank(
-            rows=rows,
-            weights=args.get("weights") or "",
-            formulas=args.get("formulas"),
-            where=args.get("where"),
+            rows=pools["_pool"],
+            weights=merged["weights"] or "",
+            formulas=merged["formulas"],
+            where=merged["where"],
             top_n=int(args.get("top_n", 10)),
         )
+        if skipped:
+            meta["skipped_prefs_terms"] = skipped
         return {"meta": meta, "results": [r.to_dict() for r in ranked]}
 
     if name == "knapset_solve_basket":
-        rows = open_source(str(args["source"])).load_rows(table=args.get("table"))
-        rows = _maybe_enrich_single(rows, args)
+        rows = open_source(str(args["source"])).load_rows(table=args.get("table"), query=args.get("query"))
+        pools = {"_pool": rows}
+        ref_specs = collect_ref_specs(args)
+        if ref_specs:
+            enrich_slot_pools(pools, ref_specs)
+        merged, skipped = resolve_prefs_for_pools(args, pools)
         sols, meta = solve_basket(
-            rows=rows,
-            weights=args.get("weights") or "",
-            limits=args.get("limits"),
-            formulas=args.get("formulas"),
-            where=args.get("where"),
+            rows=pools["_pool"],
+            weights=merged["weights"] or "",
+            limits=merged["limits"],
+            formulas=merged["formulas"],
+            where=merged["where"],
             top_n=int(args.get("top_n", 5)),
             max_per_item=int(args.get("max_per_item", 1)),
+            qty_field=args.get("qty_field"),
         )
+        if skipped:
+            meta["skipped_prefs_terms"] = skipped
         return {"meta": meta, "solutions": [s.to_dict() for s in sols]}
 
     if name == "knapset_solve_sets":
@@ -184,6 +464,7 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
             cfg = resolve_preset(str(args["preset"]))
             return cfg.execute(
                 profile_name=args.get("profile"),
+                mode_override=args.get("mode") or None,
                 prefer_override=args.get("weights") or None,
                 limits_override=args.get("limits") or None,
                 where_override=args.get("where") or None,
@@ -198,7 +479,10 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
                 if isinstance(scfg, list):
                     slot_pools[str(sname)] = list(scfg)
                 elif isinstance(scfg, dict) and scfg.get("source"):
-                    slot_pools[str(sname)] = open_source(scfg["source"]).load_rows(table=scfg.get("table"))
+                    slot_pools[str(sname)] = open_source(scfg["source"]).load_rows(
+                        table=scfg.get("table"),
+                        query=scfg.get("query"),
+                    )
         elif args.get("source"):
             src = open_source(str(args["source"]))
             wanted = args.get("tables") or src.inspect().table_names()
@@ -207,15 +491,22 @@ def handle_tool_call(name: str, arguments: Optional[Dict[str, Any]] = None) -> D
         else:
             raise ValueError("Provide 'preset', 'source', or 'slots' for knapset_solve_sets.")
 
+        ref_specs = collect_ref_specs(args)
+        if ref_specs:
+            enrich_slot_pools(slot_pools, ref_specs)
+        merged, skipped = resolve_prefs_for_pools(args, slot_pools)
+
         sols, meta = solve_sets(
             slot_pools=slot_pools,
-            weights=args.get("weights") or "",
-            limits=args.get("limits"),
-            rules=args.get("rules"),
-            formulas=args.get("formulas"),
-            where=args.get("where"),
+            weights=merged["weights"] or "",
+            limits=merged["limits"],
+            rules=merged["rules"],
+            formulas=merged["formulas"],
+            where=merged["where"],
             top_n=int(args.get("top_n", 5)),
         )
+        if skipped:
+            meta["skipped_prefs_terms"] = skipped
         return {"meta": meta, "solutions": [s.to_dict() for s in sols]}
 
     raise KeyError(f"Unknown MCP tool: {name}")

@@ -9,6 +9,7 @@ Supports:
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
@@ -25,7 +26,14 @@ except ImportError:  # pragma: no cover
 
 from app_paths import REPO_ROOT, get_config_dir, get_data_dir, get_plugins_root
 from enricher import MatchSpec, enrich_rows, parse_match_expr
-from formula_engine import filter_rows, parse_weights
+from formula_engine import (
+    _SAFE_FUNCS,
+    LimitSpec,
+    SafeExpression,
+    _extract_attr_chain,
+    filter_rows,
+    parse_weights,
+)
 from solver_engine import solve_basket, solve_rank, solve_sets
 from sources.base import BaseDataSource
 from sources.registry import get_source_registry, open_source
@@ -546,6 +554,181 @@ def list_shared_profiles(directory: Optional[Path] = None) -> Dict[str, Dict[str
             continue
         out.setdefault(name, data)
     return out
+
+
+def resolve_shared_profile(ref: str, profile_name: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    """Resolves a saved preference profile from a file path or the shared profiles library."""
+    p = Path(ref).expanduser()
+    if p.is_file():
+        return read_profile_file(p, profile_name)
+    lib = list_shared_profiles()
+    key = ref.strip().lower()
+    if key not in lib:
+        avail = ", ".join(lib) or "none saved yet"
+        raise KeyError(f"Saved profile '{ref}' not found in {get_user_profiles_dir()} (available: {avail}).")
+    return key, dict(lib[key])
+
+
+def delete_shared_profile(name: str, directory: Optional[Path] = None) -> Path:
+    """Deletes a saved preference profile from the shared profiles directory."""
+    target_dir = Path(directory) if directory else get_user_profiles_dir()
+    lib = list_shared_profiles(directory=target_dir)
+    key = name.strip().lower()
+    if key not in lib:
+        avail = ", ".join(lib) or "none"
+        raise KeyError(f"Saved profile '{name}' not found (available: {avail}).")
+    path = target_dir / f"{_clean_profile_name(key)}.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"'{name}' is not a standalone file in {target_dir}.")
+    path.unlink()
+    return path
+
+
+def collect_pool_columns(slot_pools: Dict[str, List[Dict[str, Any]]]) -> Tuple[List[str], List[str]]:
+    """Collects available column names (including `ref.*` and `slot.col`) and slot names from `slot_pools`."""
+    cols: set[str] = set()
+    slot_names = list(slot_pools.keys())
+    for sname, rows in slot_pools.items():
+        for row in rows[:50]:
+            for k, v in row.items():
+                cols.add(str(k))
+                cols.add(f"{sname}.{k}")
+                if isinstance(v, dict):
+                    for sub_k in v.keys():
+                        cols.add(f"{k}.{sub_k}")
+                        cols.add(f"{sname}.{k}.{sub_k}")
+    return sorted(cols), slot_names
+
+
+def filter_profile_for_columns(
+    data: Dict[str, Any],
+    available_columns: Sequence[str],
+    slot_names: Sequence[str] = (),
+) -> Tuple[Dict[str, Any], List[str]]:
+    """
+    Filters a profile dict to keep only formulas, filters, limits, rules, and weights
+    whose column references exist in `available_columns`. Returns `(filtered_profile, skipped)`.
+    """
+    known = set(available_columns)
+    known.update(c.split(".", 1)[1] for c in available_columns if "." in c)
+    slot_names_set = set(slot_names)
+    skipped: List[str] = []
+
+    def _unknown_refs_in_expr(expr_text: str) -> List[str]:
+        try:
+            compiled = SafeExpression(expr_text)
+        except Exception:
+            return []
+        missing: List[str] = []
+        for node in ast.walk(compiled.tree):
+            if isinstance(node, ast.Attribute):
+                chain = _extract_attr_chain(node)
+                dotted = ".".join(chain)
+                if chain[0] in slot_names_set:
+                    if len(chain) >= 2 and dotted not in known:
+                        missing.append(dotted)
+                elif dotted not in known and chain[0] not in _SAFE_FUNCS:
+                    missing.append(dotted)
+        for root in compiled.roots_referenced:
+            if root not in slot_names_set and root not in known and root not in _SAFE_FUNCS:
+                missing.append(root)
+        return missing
+
+    kept_formulas: List[str] = []
+    for f_str in data.get("formulas") or []:
+        fs = str(f_str).strip()
+        if "=" in fs:
+            fname, rhs = fs.split("=", 1)
+            if _unknown_refs_in_expr(rhs):
+                skipped.append(fname.strip())
+                continue
+            known.add(fname.strip())
+            kept_formulas.append(fs)
+
+    def _keep_exprs(raw_list: Sequence[Any], is_limit: bool = False) -> List[str]:
+        kept: List[str] = []
+        for item in raw_list:
+            text = str(item).strip()
+            check_expr = text
+            if is_limit:
+                try:
+                    check_expr = LimitSpec.parse(text).inner_expr or ""
+                except Exception:
+                    pass
+            missing = _unknown_refs_in_expr(check_expr) if check_expr else []
+            if missing:
+                skipped.extend(m for m in missing if m not in skipped)
+                continue
+            kept.append(text)
+        return kept
+
+    weights: Dict[str, float] = {}
+    for expr, w in (data.get("weights") or {}).items():
+        e = str(expr).strip()
+        if (re.fullmatch(r"[A-Za-z_][\w.]*", e) and e not in known) or _unknown_refs_in_expr(e):
+            if e not in skipped:
+                skipped.append(e)
+            continue
+        weights[e] = float(w)
+
+    prof = dict(data)
+    prof["formulas"] = kept_formulas
+    prof["where"] = _keep_exprs(data.get("where") or [])
+    prof["limits"] = _keep_exprs(data.get("limits") or [], is_limit=True)
+    prof["rules"] = _keep_exprs(data.get("rules") or [])
+    prof["weights"] = weights
+    return prof, skipped
+
+
+def apply_profile_defaults(
+    profile: Dict[str, Any],
+    *,
+    mode: Optional[str] = None,
+    weights: Any = None,
+    formulas: Any = None,
+    where: Any = None,
+    limits: Any = None,
+    rules: Any = None,
+) -> Dict[str, Any]:
+    """Merges saved profile defaults with explicit request arguments (explicit values win)."""
+    return {
+        "mode": mode or profile.get("mode"),
+        "weights": weights if weights else (profile.get("weights") or {}),
+        "formulas": list(formulas) if formulas else list(profile.get("formulas") or []),
+        "where": list(where) if where else list(profile.get("where") or []),
+        "limits": list(limits) if limits else list(profile.get("limits") or []),
+        "rules": list(rules) if rules else list(profile.get("rules") or []),
+    }
+
+
+def resolve_prefs_for_pools(
+    args: Dict[str, Any],
+    slot_pools: Dict[str, List[Dict[str, Any]]],
+) -> Tuple[Dict[str, Any], List[str]]:
+    """Resolves `args['prefs']` against `slot_pools`, filtering missing columns and applying explicit overrides."""
+    prefs_ref = args.get("prefs")
+    if not prefs_ref:
+        return {
+            "mode": args.get("mode"),
+            "weights": args.get("weights") or "",
+            "formulas": args.get("formulas") or [],
+            "where": args.get("where") or [],
+            "limits": args.get("limits") or [],
+            "rules": args.get("rules") or [],
+        }, []
+    _name, raw_prof = resolve_shared_profile(str(prefs_ref))
+    cols, slot_names = collect_pool_columns(slot_pools)
+    filtered_prof, skipped = filter_profile_for_columns(raw_prof, cols, slot_names)
+    merged = apply_profile_defaults(
+        filtered_prof,
+        mode=args.get("mode"),
+        weights=args.get("weights"),
+        formulas=args.get("formulas"),
+        where=args.get("where"),
+        limits=args.get("limits"),
+        rules=args.get("rules"),
+    )
+    return merged, skipped
 
 
 def get_presets_dirs() -> List[Path]:

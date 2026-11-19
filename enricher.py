@@ -229,3 +229,126 @@ def enrich_from_source(
     """Loads `ref_source` and enriches `candidate_rows` using `spec`."""
     ref_rows = open_source(ref_source).load_rows(table=ref_table, query=ref_query)
     return enrich_rows(candidate_rows, ref_rows, spec)
+
+
+def infer_default_match(left_cols: Sequence[str], right_cols: Sequence[str]) -> Tuple[str, str, str]:
+    """Infers `(left_field, right_field, strategy)` when `--match` is omitted."""
+    l_lower = {c.lower(): c for c in left_cols}
+    r_lower = {c.lower(): c for c in right_cols}
+    for key in ("id", "sku", "part_number", "code", "upc", "ean"):
+        if key in l_lower and key in r_lower:
+            return l_lower[key], r_lower[key], "exact"
+    for key in ("model", "title", "name", "product"):
+        if key in l_lower and key in r_lower:
+            return l_lower[key], r_lower[key], "token"
+    for lk in ("title", "name", "model", "listing", "description", "label"):
+        if lk in l_lower:
+            for rk in ("model", "name", "title", "pattern", "label"):
+                if rk in r_lower:
+                    return l_lower[lk], r_lower[rk], "token"
+    if left_cols and right_cols:
+        return left_cols[0], right_cols[0], "token"
+    raise ValueError("Cannot infer match columns from empty schema; pass '--match left~right'.")
+
+
+def compare_sources(
+    source: str | Path,
+    ref_source: str | Path,
+    *,
+    table: Optional[str] = None,
+    query: Optional[str] = None,
+    ref_table: Optional[str] = None,
+    ref_query: Optional[str] = None,
+    match: Optional[str] = None,
+    strategy: Optional[str] = None,
+    alias: str = "ref",
+    on_unmatched: str = "keep",
+    limit: int = 15,
+) -> Dict[str, Any]:
+    """Compares a primary source against a Reference DB and returns match coverage + preview rows."""
+    left_rows = open_source(source).load_rows(table=table, query=query)
+    right_rows = open_source(ref_source).load_rows(table=ref_table, query=ref_query)
+
+    if match:
+        lf, rf, inferred_strat = parse_match_expr(match)
+        strat = strategy or inferred_strat or "token"
+    else:
+        l_cols = list(left_rows[0].keys()) if left_rows else []
+        r_cols = list(right_rows[0].keys()) if right_rows else []
+        lf, rf, inferred_strat = infer_default_match(l_cols, r_cols)
+        strat = strategy or inferred_strat
+
+    spec = MatchSpec(
+        left_field=lf,
+        right_field=rf,
+        strategy=strat,
+        alias=alias,
+        on_unmatched=on_unmatched,
+    )
+    res = enrich_rows(left_rows, right_rows, spec)
+    preview = res.rows[:limit] if limit and limit > 0 else res.rows
+    return {
+        "match": {
+            "left_field": lf,
+            "right_field": rf,
+            "strategy": strat,
+            "alias": spec.alias,
+            "on_unmatched": spec.on_unmatched,
+            "total": res.total,
+            "matched": res.matched,
+            "unmatched": res.unmatched,
+            "match_rate": round(res.match_rate, 4),
+            "unmatched_samples": res.unmatched_samples,
+        },
+        "rows": preview,
+    }
+
+
+def collect_ref_specs(args: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalizes single (`ref_source`) and list (`references`) ref specs from API/MCP payloads."""
+    specs: List[Dict[str, Any]] = []
+    if args.get("ref_source"):
+        specs.append(
+            {
+                "source": args["ref_source"],
+                "table": args.get("ref_table"),
+                "query": args.get("ref_query"),
+                "match": args.get("match") or "title~model",
+                "strategy": args.get("strategy"),
+                "alias": args.get("alias") or "ref",
+                "on_unmatched": args.get("on_unmatched") or "drop",
+            }
+        )
+    for item in args.get("references") or []:
+        if isinstance(item, dict) and item.get("source"):
+            specs.append(dict(item))
+    return specs
+
+
+def enrich_slot_pools(
+    slot_pools: Dict[str, List[Dict[str, Any]]],
+    references: Sequence[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Applies a sequence of reference attachment specs onto matching slots in `slot_pools`."""
+    for ref_cfg in references:
+        ref_source = ref_cfg.get("source")
+        if not ref_source:
+            continue
+        r_rows = open_source(str(ref_source)).load_rows(
+            table=ref_cfg.get("table"),
+            query=ref_cfg.get("query"),
+        )
+        match_expr = str(ref_cfg.get("match") or "title~model")
+        lf, rf, inferred = parse_match_expr(match_expr)
+        spec = MatchSpec(
+            left_field=lf,
+            right_field=rf,
+            strategy=str(ref_cfg.get("strategy") or inferred or "token"),
+            alias=str(ref_cfg.get("alias") or "ref"),
+            on_unmatched=str(ref_cfg.get("on_unmatched") or "drop"),
+        )
+        target_slots = [str(ref_cfg["slot"])] if ref_cfg.get("slot") else list(slot_pools.keys())
+        for sname in target_slots:
+            if sname in slot_pools:
+                slot_pools[sname] = enrich_rows(slot_pools[sname], r_rows, spec).rows
+    return slot_pools
