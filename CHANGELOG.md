@@ -2,6 +2,15 @@
 
 All notable changes to Knapset are documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Full 4-Surface Parity (`web_server.py`, `mcp_server.py`)**: Expanded MCP server to 9 tools (`knapset_compare_sources`, `knapset_prefs`, `knapset_registry`, `knapset_sensitivity`) and upgraded Web Studio with `/api/compare`, `/api/prefs`, `/api/themes`, `/api/registry`, `/api/sensitivity`, separated `where` vs `rules`, live `-`/`+` weight sliders, CSV export, and header theme switcher.
+- **Solver Core (`solver_engine.py`, `formula_engine.py`)**: Added outlier-resilient `robust` (Tukey IQR, default), `minmax`, and `rank` normalization (`--norm`), structured infeasibility diagnostics (`meta.diagnostics`), fractional-knapsack Dantzig upper-bound pruning in `solve_basket`, multi-limit Pareto retention & `--diverse` Top-N sets in `solve_sets`, and new formula helpers (`if_else`, `startswith`, `endswith`, `regex_match`, `pct_diff`).
+- **Real-World Ingestion & Matching (`sources/`, `enricher.py`)**: Added UTF-8 BOM stripping, CSV delimiter sniffing (`;` / `,` / `\t` / `|`), nested JSON `#path` loading, stdin (`-`) piping, `fuzzy` (`difflib.SequenceMatcher`) matching with provenance, and composite `+` match keys (`brand+model~make+name`).
+- **Decision Workflows (`--pin`, `--exclude`, `ks sensitivity`)**: Lock specific slots/items, ban candidates, and run weight/limit perturbation stability analysis across CLI, TUI, Web Studio, and MCP.
+- **Modularization & Registry Ecosystem**: Split monolithic `tui.py` into `tui/{state,renderer,app}.py`, extracted `web_assets/studio.html`, updated packaging (`pyproject.toml`, `MANIFEST.in`, `PKGBUILD`), and added `meal_prep`, `cloud_vms`, and `camera_kit` presets to `knapset-registry`.
+
 ## [2.0.0] - 2026-11-17
 
 ### Architecture & Product Pivot

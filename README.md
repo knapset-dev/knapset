@@ -18,20 +18,21 @@ Existing DBs (.db / .csv / .json) ──► Reference DB Enricher (--ref) ──
 
 ## Key Features
 
-- **Read-Only Multi-Format Ingestion (`sources/`)**: Opens SQLite databases (`?mode=ro` + `PRAGMA query_only = ON`, single read-only `SELECT`/`WITH`), CSV, TSV, JSON, and JSONL automatically.
-- **Cross-Database Matching & Enrichment (`enricher.py`, `--ref`, `ks compare`)**: Attach Reference DBs (benchmark tables, MSRP price sheets, calorie tables) onto candidate listings using `exact`, specificity-ordered `token`, or `regex` matching, exposed under `ref.*` (e.g. `ref.score`, `ref.msrp`).
+- **Read-Only Multi-Format Ingestion (`sources/`)**: Opens SQLite databases (`?mode=ro` + `PRAGMA query_only = ON`, single read-only `SELECT`/`WITH`), CSV (with UTF-8 BOM & delimiter sniffing), TSV, JSON (including nested paths like `api.json#data.items`), JSONL, and stdin (`-`) automatically.
+- **Cross-Database Matching & Enrichment (`enricher.py`, `--ref`, `ks compare`)**: Attach Reference DBs (benchmark tables, MSRP price sheets, calorie tables) onto candidate listings using `exact`, specificity-ordered `token`, `regex`, or `fuzzy` (`difflib.SequenceMatcher`) matching — including composite keys (`brand+model~make+name`) and match provenance — exposed under `ref.*` (e.g. `ref.score`, `ref.msrp`).
 - **Safe AST Formulas, Filters, Weights & Limits (`formula_engine.py`)**:
   - Derived formulas: `--formula "deal_pct = (ref.msrp - price) / ref.msrp * 100"`
-  - Signed preference weights: `--prefer "ref.score:+0.7, price:-0.3"` with automatic min-max `[0, 1]` normalization and `--explain` breakdown
+  - Signed preference weights: `--prefer "ref.score:+0.7, price:-0.3"` with outlier-resilient `robust` (Tukey IQR, default), `minmax`, or `rank` normalization (`--norm`) and `--explain` breakdown
   - Multi-resource limits: `--limit "sum(price) <= 950"`, `--limit "sum(weight_g) <= 2000"`, `--limit "count <= 5"`
   - Cross-slot compatibility rules: `--rule "cpu.socket == mobo.socket"`, `--rule "cpu.score / gpu.ref.score < 1"`
-- **Three Optimization Modes (`solver_engine.py`)**:
-  - `ks rank`: Single-table Top-K ranking with `--explain` normalized breakdown.
-  - `ks basket`: 0/1 or bounded multi-item knapsack under multiple resource caps.
-  - `ks solve`: Multi-slot set composition across tables or separate files.
-- **Interactive `curses` TUI (`ks tui`)**: Pick main & reference DBs, switch presets/profiles, switch live color themes via `/theme` in the command palette, nudge weights live with `←`/`→` or `-`/`+` (keyboard or mouse hold), type custom formulas/rules/limits inline with discovered column hints, see top results update live, and save customized `.json` presets.
+- **Three Optimization Modes + Decision Workflows (`solver_engine.py`)**:
+  - `ks rank`: Single-table Top-K ranking with `--explain` breakdown and `--exclude`.
+  - `ks basket`: 0/1 or bounded multi-item knapsack under multiple resource caps (with fractional-knapsack upper-bound pruning and `--pin`/`--exclude`).
+  - `ks solve`: Multi-slot set composition across tables or separate files with `--diverse`, `--pin`, `--exclude`, and infeasibility diagnostics (`why:` explanations when 0 sets match).
+  - `ks sensitivity`: Perturbs weights and limits to measure `#1` winner stability, closest challenger, and marginal shadow gains.
+- **Interactive `curses` TUI (`tui/`, `ks tui`)**: Pick main & reference DBs, switch presets/profiles, switch live color themes via `/theme` in the command palette, nudge weights live with `←`/`→` or `-`/`+` (keyboard or mouse hold), type custom formulas/rules/limits inline with discovered column hints, see top results update live, and save customized `.json` presets.
 - **Registry, Presets & TUI Themes (`ks reg`, `ks preset`, `configs/theme.json`)**: Save/share declarative `.json` (or `.toml` on Python 3.11+) presets, configure or switch TUI color themes in `configs/theme.json` (supporting named ANSI, 256-color indices, and `#RRGGBB` hex colors, with built-in `agy-dark` and `soft-dark-pink`), or search/install/verify community presets and themes via `knapset-registry` (`ks reg`).
-- **Web Studio (`ks serve`) & MCP Server (`ks mcp`)**: Built-in local browser dashboard + JSON API (`http.server`) and zero-dependency JSON-RPC 2.0 MCP server over `stdio`.
+- **Web Studio (`ks serve`, `web_assets/studio.html`) & MCP Server (`ks mcp`)**: Full-parity local browser studio + REST API (`/api/inspect`, `/api/compare`, `/api/solve`, `/api/sensitivity`, `/api/prefs`, `/api/themes`, `/api/registry`) with live weight sliders and theme switching, plus a 9-tool zero-dependency JSON-RPC 2.0 MCP server over `stdio`.
 
 ---
 
