@@ -9,7 +9,7 @@ from typing import Callable, Dict, List, Optional
 
 from sources.base import BaseDataSource, SourceSchema
 from sources.sqlite_source import SQLiteDataSource
-from sources.tabular_source import TabularDataSource
+from sources.tabular_source import StdinDataSource, TabularDataSource
 
 _SQLITE_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".db3"}
 _TABULAR_SUFFIXES = {".csv", ".tsv", ".json", ".jsonl", ".ndjson"}
@@ -42,8 +42,12 @@ class DataSourceRegistry:
         return sorted(["sqlite", "csv", "tsv", "json", "jsonl"] + list(self._custom_schemes.keys()))
 
     def open(self, target: str | Path) -> BaseDataSource:
-        """Opens a local file path or registered URI scheme as a `BaseDataSource`."""
+        """Opens a local file path, stdin (`-`), JSON path (`file.json#a.b`), or registered URI scheme."""
         raw = str(target).strip()
+        if raw == "-" or raw.startswith("-#"):
+            frag = raw[2:].strip() if raw.startswith("-#") else None
+            return StdinDataSource(json_path=frag)
+
         if "://" in raw and not raw.startswith("file://"):
             scheme = raw.split("://", 1)[0].lower().strip()
             factory = self._custom_schemes.get(scheme)
@@ -55,6 +59,12 @@ class DataSourceRegistry:
             return factory(raw)
 
         clean_path = raw[len("file://") :] if raw.startswith("file://") else raw
+        json_fragment: Optional[str] = None
+        if "#" in clean_path and not Path(clean_path).expanduser().is_file():
+            lhs, rhs = clean_path.split("#", 1)
+            if Path(lhs).expanduser().is_file():
+                clean_path, json_fragment = lhs, rhs.strip() or None
+
         p = Path(clean_path).expanduser().resolve()
         if not p.is_file():
             raise FileNotFoundError(f"Data source not found: {target}")
@@ -63,10 +73,10 @@ class DataSourceRegistry:
         if ext in _SQLITE_SUFFIXES or _looks_like_sqlite(p):
             return SQLiteDataSource(p)
         if ext in _TABULAR_SUFFIXES:
-            return TabularDataSource(p)
+            return TabularDataSource(p, json_path=json_fragment)
         raise ValueError(
             f"Could not detect source format for '{p.name}'. "
-            "Supported built-in formats: SQLite (.db/.sqlite/.sqlite3), .csv, .tsv, .json, .jsonl."
+            "Supported built-in formats: SQLite (.db/.sqlite/.sqlite3), .csv, .tsv, .json, .jsonl, or '-' (stdin)."
         )
 
 

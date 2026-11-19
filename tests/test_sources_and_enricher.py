@@ -316,6 +316,55 @@ class TestV2Phase1CLI(unittest.TestCase):
             self.assertEqual(cmp_payload["match"]["unmatched"], 1)
             self.assertEqual(cmp_payload["rows"][0]["ref"]["model"], "RTX 3080 Ti")
 
+    def test_bom_semicolon_csv_nested_json_path_and_stdin(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            # BOM + semicolon CSV (common European Excel export)
+            semi_csv = root / "eu.csv"
+            semi_csv.write_bytes("\ufeffname;price;score\nAlpha;100;85\nBeta;150;92\n".encode("utf-8"))
+            rows = open_source(semi_csv).load_rows()
+            self.assertEqual(len(rows), 2)
+            self.assertIn("name", rows[0])  # BOM cleanly stripped
+            self.assertEqual(rows[0]["price"], 100)
+
+            # Nested JSON path via file.json#data.items
+            nested_json = root / "api.json"
+            nested_json.write_text(
+                json.dumps({"status": "ok", "data": {"items": [{"name": "X1", "price": 50}, {"name": "X2", "price": 80}]}}),
+                encoding="utf-8",
+            )
+            j_rows = open_source(f"{nested_json}#data.items").load_rows()
+            self.assertEqual([r["name"] for r in j_rows], ["X1", "X2"])
+
+            # Stdin ('-') CSV piping
+            with patch("sys.stdin", io.StringIO("name,price,score\nS1,10,80\nS2,20,95\n")):
+                out = self._run_cli(["rank", "-", "--prefer", "score:+0.8,price:-0.2", "--json"])
+                data = json.loads(out)
+                self.assertEqual(len(data["results"]), 2)
+                self.assertEqual(data["results"][0]["row"]["name"], "S2")
+
+    def test_fuzzy_matching_composite_keys_and_provenance(self) -> None:
+        res_fuzzy = enrich_rows(
+            [{"title": "GeForce RTX 4070 Supe"}, {"title": "Completely Unrelated"}],
+            [{"model": "GeForce RTX 4070 Super", "score": 29000}],
+            MatchSpec(left_field="title", right_field="model", strategy="fuzzy", threshold=0.8, on_unmatched="drop"),
+            include_provenance=True,
+        )
+        self.assertEqual(res_fuzzy.matched, 1)
+        self.assertEqual(res_fuzzy.method_counts.get("fuzzy"), 1)
+        self.assertEqual(res_fuzzy.rows[0]["_match_method"], "fuzzy")
+        self.assertGreaterEqual(res_fuzzy.rows[0]["_match_score"], 0.8)
+
+        res_comp = enrich_rows(
+            [{"brand": "Sony", "model": "A7 IV"}, {"brand": "Canon", "model": "R6 II"}],
+            [{"make": "Sony", "name": "A7 IV", "score": 95}, {"make": "Canon", "name": "R6 II", "score": 93}],
+            MatchSpec(left_field="brand+model", right_field="make+name", strategy="exact", on_unmatched="drop"),
+        )
+        self.assertEqual(res_comp.matched, 2)
+        self.assertEqual(res_comp.rows[0]["ref"]["score"], 95)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -216,7 +216,8 @@ def run_compare(argv: List[str]) -> None:
     parser.add_argument("--ref-table", default=None, help="Reference table/collection name")
     parser.add_argument("--ref-query", default=None, help="Read-only SQL SELECT query for reference SQLite source")
     parser.add_argument("--match", "-m", default=None, help="Match rule, e.g. 'title~model' (token) or 'sku=id' (exact)")
-    parser.add_argument("--strategy", choices=["exact", "token", "regex"], default=None, help="Matching strategy override")
+    parser.add_argument("--strategy", choices=["exact", "token", "regex", "fuzzy"], default=None, help="Matching strategy override")
+    parser.add_argument("--threshold", type=float, default=0.78, help="Fuzzy match similarity threshold (default: 0.78)")
     parser.add_argument("--alias", default="ref", help="Field alias for attached reference attributes (default: ref)")
     parser.add_argument("--on-unmatched", choices=["keep", "drop"], default="keep", help="Keep or drop unmatched rows (default: keep)")
     parser.add_argument("--limit", "-n", type=int, default=15, help="Maximum rows to display (default: 15)")
@@ -241,8 +242,9 @@ def run_compare(argv: List[str]) -> None:
         strategy=strat,
         alias=args.alias,
         on_unmatched=args.on_unmatched,
+        threshold=args.threshold,
     )
-    res = enrich_rows(left_rows, right_rows, spec)
+    res = enrich_rows(left_rows, right_rows, spec, include_provenance=True)
 
     if args.json:
         payload = {
@@ -251,10 +253,12 @@ def run_compare(argv: List[str]) -> None:
                 "right_field": rf,
                 "strategy": strat,
                 "alias": spec.alias,
+                "threshold": spec.threshold,
                 "total": res.total,
                 "matched": res.matched,
                 "unmatched": res.unmatched,
                 "match_rate": round(res.match_rate, 4),
+                "method_counts": dict(res.method_counts),
                 "unmatched_samples": res.unmatched_samples,
             },
             "rows": res.rows[: args.limit] if args.limit and args.limit > 0 else res.rows,
@@ -417,7 +421,7 @@ def _export_output(export_path: str, json_payload: Dict[str, Any], flat_rows: Li
 def _add_common_solve_flags(parser: argparse.ArgumentParser, default_top: int = 10) -> None:
     parser.add_argument("--ref", action="append", default=[], help="Reference DB/file (optionally ':match=a~b,alias=ref,on_unmatched=drop')")
     parser.add_argument("--match", default=None, help="Match rule for --ref, e.g. 'title~model' or 'sku=id'")
-    parser.add_argument("--strategy", choices=["exact", "token", "regex"], default=None, help="Default --ref match strategy")
+    parser.add_argument("--strategy", choices=["exact", "token", "regex", "fuzzy"], default=None, help="Default --ref match strategy")
     parser.add_argument("--alias", default="ref", help="Default --ref alias (default: ref)")
     parser.add_argument("--on-unmatched", choices=["drop", "keep"], default="drop", help="Unmatched row policy for --ref (default: drop)")
     parser.add_argument("--formula", "-f", action="append", default=[], help="Derived row formula, e.g. 'deal = (price - ref.msrp) / ref.msrp'")

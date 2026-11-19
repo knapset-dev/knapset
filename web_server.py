@@ -235,6 +235,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
             <option value="token">token</option>
             <option value="exact">exact</option>
             <option value="regex">regex</option>
+            <option value="fuzzy">fuzzy</option>
           </select>
         </div>
         <div style="width:92px">
