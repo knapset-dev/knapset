@@ -796,13 +796,21 @@ class TuiSessionState:
         snapshot = (self.profile, self.mode, list(self.weights), dict(self.weight_dirs),
                     list(self.formulas), list(self.where), list(self.limits), list(self.rules))
         self._apply_profile_dict(name, prof, cfg=None)
-        self._rebuild_columns_and_pools()
+        if not self.slot_pools:
+            self._rebuild_columns_and_pools()
+        else:
+            for f_str in self.formulas:
+                if "=" in f_str:
+                    fname = f_str.split("=", 1)[0].strip()
+                    if fname and fname not in self.available_columns:
+                        self.available_columns.append(fname)
         self.status_message = ""
         self.re_solve()
         if self.status_message.startswith("Check expression"):
             (self.profile, self.mode, self.weights, self.weight_dirs,
              self.formulas, self.where, self.limits, self.rules) = snapshot
-            self._rebuild_columns_and_pools()
+            if not self.slot_pools:
+                self._rebuild_columns_and_pools()
             self.re_solve()
             raise ValueError(f"Profile '{name}' does not fit this DB (check columns / formulas).")
         self.saved_profiles[name] = self._snapshot_current_profile()
@@ -813,41 +821,50 @@ class TuiSessionState:
         self.status_message = f"Applied saved profile '{name}'{note}."
         return skipped
 
-    def switch_profile(self, profile_name: str) -> None:
+    def switch_profile(self, profile_name: str, auto_solve: bool = True) -> None:
         """Hops to another saved preference profile without unloading your DBs/References."""
         if profile_name not in self.saved_profiles:
             raise KeyError(f"Profile '{profile_name}' not found.")
         self._apply_profile_dict(profile_name, self.saved_profiles[profile_name], cfg=self.active_preset_cfg)
-        self._rebuild_columns_and_pools()
-        self.re_solve()
+        if not self.slot_pools:
+            self._rebuild_columns_and_pools()
+        else:
+            for f_str in self.formulas:
+                if "=" in f_str:
+                    fname = f_str.split("=", 1)[0].strip()
+                    if fname and fname not in self.available_columns:
+                        self.available_columns.append(fname)
+        if auto_solve:
+            self.re_solve()
         self.status_message = f"Switched preference profile -> '{profile_name}'."
 
-    def delete_preference_profile(self, profile_name: str) -> None:
+    def delete_preference_profile(self, profile_name: str, auto_solve: bool = True) -> None:
         if len(self.saved_profiles) <= 1 or profile_name not in self.saved_profiles:
             self.status_message = "Cannot delete the only active preference profile."
             return
         del self.saved_profiles[profile_name]
         if self.profile == profile_name:
             first = next(iter(self.saved_profiles.keys()))
-            self.switch_profile(first)
+            self.switch_profile(first, auto_solve=auto_solve)
         else:
             self.status_message = f"Removed preference profile '{profile_name}'."
         self.dirty = True
 
-    def cycle_mode(self) -> None:
+    def cycle_mode(self, auto_solve: bool = True) -> None:
         order = ("solve", "basket", "rank") if len(self.slot_pools) > 1 else ("rank", "basket")
         curr_idx = order.index(self.mode) if self.mode in order else 0
         self.mode = order[(curr_idx + 1) % len(order)]
-        self.re_solve()
+        if auto_solve:
+            self.re_solve()
         self.status_message = f"Mode switched to '{self.mode}'."
 
-    def cycle_profile(self) -> None:
+    def cycle_profile(self, auto_solve: bool = True) -> None:
         names = list(self.saved_profiles.keys())
         if len(names) <= 1:
             return
         idx = names.index(self.profile) if self.profile in names else 0
         nxt = names[(idx + 1) % len(names)]
-        self.switch_profile(nxt)
+        self.switch_profile(nxt, auto_solve=auto_solve)
 
     def capture_solve_inputs(self) -> Dict[str, Any]:
         """Captures an immutable-safe snapshot of solver inputs for background worker threads."""
@@ -1839,11 +1856,11 @@ def run_curses_tui(state: TuiSessionState) -> None:
             state.adjust_weight(idx, sign * 0.05, auto_solve=False)
             _schedule_solve()
 
-        def _schedule_solve() -> None:
+        def _schedule_solve(immediate: bool = False) -> None:
             nonlocal solve_pending, solve_due_at, solve_gen, needs_redraw
             solve_gen += 1
             solve_pending = True
-            solve_due_at = time.monotonic() + DEBOUNCE_SEC
+            solve_due_at = time.monotonic() + (0.0 if immediate else DEBOUNCE_SEC)
             needs_redraw = True
 
         def _start_async_solve() -> None:
@@ -2031,16 +2048,12 @@ def run_curses_tui(state: TuiSessionState) -> None:
                 force_clear = True
                 continue
             if ch in (ord("h"), ord("H")):
-                solve_gen += 1
-                solve_pending = False
-                worker_running = False
-                state.cycle_profile()
+                state.cycle_profile(auto_solve=False)
+                _schedule_solve(immediate=True)
                 continue
             if ch in (ord("m"), ord("M")):
-                solve_gen += 1
-                solve_pending = False
-                worker_running = False
-                state.cycle_mode()
+                state.cycle_mode(auto_solve=False)
+                _schedule_solve(immediate=True)
                 continue
             if ch in (ord("e"), ord("E")):
                 state.explain = not state.explain
@@ -2236,7 +2249,8 @@ def run_curses_tui(state: TuiSessionState) -> None:
                     _action_pick_preset(stdscr)
                     force_clear = True
                 elif cur.kind == "profile":
-                    state.switch_profile(cur.key)
+                    state.switch_profile(cur.key, auto_solve=False)
+                    _schedule_solve(immediate=True)
                 elif cur.kind == "slot":
                     _action_repick_slot(stdscr, cur.key)
                     force_clear = True

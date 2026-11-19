@@ -184,6 +184,7 @@ class SafeExpression:
         except SyntaxError as exc:
             raise ValueError(f"Invalid expression syntax '{self.expression}': {exc}") from exc
         self.roots_referenced: Tuple[str, ...] = self._validate_ast(self.tree.body)
+        self._compiled: Callable[[Dict[str, Any], Optional[Dict[str, Callable[..., Any]]]], Any] = self._compile_node(self.tree.body)
 
     def _validate_ast(self, root: ast.AST) -> Tuple[str, ...]:
         roots: List[str] = []
@@ -241,111 +242,174 @@ class SafeExpression:
         return tuple(roots)
 
     def evaluate(self, ctx: Dict[str, Any], extra_funcs: Optional[Dict[str, Callable[..., Any]]] = None) -> Any:
-        return self._eval_node(self.tree.body, ctx, extra_funcs=extra_funcs)
+        return self._compiled(ctx, extra_funcs)
 
-    def _eval_node(
+    def _compile_node(
         self,
         node: ast.AST,
-        ctx: Dict[str, Any],
-        extra_funcs: Optional[Dict[str, Callable[..., Any]]] = None,
-    ) -> Any:
+    ) -> Callable[[Dict[str, Any], Optional[Dict[str, Callable[..., Any]]]], Any]:
         if isinstance(node, ast.Constant):
-            return node.value
+            val = node.value
+            return lambda _ctx, _ef, v=val: v
         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
-            elts = [self._eval_node(e, ctx, extra_funcs) for e in node.elts]
+            elt_fns = tuple(self._compile_node(e) for e in node.elts)
             if isinstance(node, ast.Tuple):
-                return tuple(elts)
+                return lambda ctx, ef, fns=elt_fns: tuple(f(ctx, ef) for f in fns)
             if isinstance(node, ast.Set):
-                return set(elts)
-            return elts
+                return lambda ctx, ef, fns=elt_fns: {f(ctx, ef) for f in fns}
+            return lambda ctx, ef, fns=elt_fns: [f(ctx, ef) for f in fns]
         if isinstance(node, ast.IfExp):
-            cond = bool(self._eval_node(node.test, ctx, extra_funcs))
-            return self._eval_node(node.body if cond else node.orelse, ctx, extra_funcs)
+            test_fn = self._compile_node(node.test)
+            body_fn = self._compile_node(node.body)
+            else_fn = self._compile_node(node.orelse)
+            return lambda ctx, ef, tf=test_fn, bf=body_fn, el=else_fn: (bf(ctx, ef) if tf(ctx, ef) else el(ctx, ef))
         if isinstance(node, ast.UnaryOp):
             op_fn = _UNARY_OPS.get(type(node.op))
             if not op_fn:
                 raise ValueError(f"Unsupported unary operator: {type(node.op).__name__}")
-            val = self._eval_node(node.operand, ctx, extra_funcs)
+            arg_fn = self._compile_node(node.operand)
             if isinstance(node.op, ast.Not):
-                return not bool(val)
-            if val is None:
-                return None
-            return op_fn(val)
+                return lambda ctx, ef, af=arg_fn: not bool(af(ctx, ef))
+            return lambda ctx, ef, af=arg_fn, fn=op_fn: (None if (v := af(ctx, ef)) is None else fn(v))
         if isinstance(node, ast.BinOp):
             op_fn = _BINARY_OPS.get(type(node.op))
             if not op_fn:
                 raise ValueError(f"Unsupported binary operator: {type(node.op).__name__}")
-            left = self._eval_node(node.left, ctx, extra_funcs)
-            right = self._eval_node(node.right, ctx, extra_funcs)
-            if left is None or right is None:
-                return None
-            if isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod)) and right == 0:
-                return None
-            if isinstance(node.op, ast.Pow) and isinstance(right, (int, float)) and abs(right) > 1000:
-                raise ValueError("Exponent magnitude too large in expression.")
-            try:
-                res = op_fn(left, right)
-                if isinstance(res, float) and not math.isfinite(res):
+            l_fn = self._compile_node(node.left)
+            r_fn = self._compile_node(node.right)
+            is_div = isinstance(node.op, (ast.Div, ast.FloorDiv, ast.Mod))
+            is_pow = isinstance(node.op, ast.Pow)
+
+            def _binop(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> Any:
+                left = l_fn(ctx, ef)
+                right = r_fn(ctx, ef)
+                if left is None or right is None:
                     return None
-                return res
-            except (ZeroDivisionError, TypeError, ValueError):
-                return None
+                if is_div and right == 0:
+                    return None
+                if is_pow and isinstance(right, (int, float)) and abs(right) > 1000:
+                    raise ValueError("Exponent magnitude too large in expression.")
+                try:
+                    res = op_fn(left, right)
+                    if isinstance(res, float) and not math.isfinite(res):
+                        return None
+                    return res
+                except (ZeroDivisionError, TypeError, ValueError):
+                    return None
+
+            return _binop
         if isinstance(node, ast.BoolOp):
+            val_fns = tuple(self._compile_node(v) for v in node.values)
             if isinstance(node.op, ast.And):
-                return all(bool(self._eval_node(v, ctx, extra_funcs)) for v in node.values)
+                def _and(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> bool:
+                    for f in val_fns:
+                        if not f(ctx, ef):
+                            return False
+                    return True
+                return _and
             if isinstance(node.op, ast.Or):
-                return any(bool(self._eval_node(v, ctx, extra_funcs)) for v in node.values)
+                def _or(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> bool:
+                    for f in val_fns:
+                        if f(ctx, ef):
+                            return True
+                    return False
+                return _or
             raise ValueError(f"Unsupported boolean operator: {type(node.op).__name__}")
         if isinstance(node, ast.Compare):
-            left = self._eval_node(node.left, ctx, extra_funcs)
+            l_fn = self._compile_node(node.left)
+            steps = []
             for op, comp in zip(node.ops, node.comparators):
-                right = self._eval_node(comp, ctx, extra_funcs)
                 cmp_fn = _CMP_OPS.get(type(op))
                 if not cmp_fn:
                     raise ValueError(f"Unsupported comparison operator: {type(op).__name__}")
-                if left is None or right is None:
-                    if isinstance(op, ast.Eq):
-                        ok = left is right
-                    elif isinstance(op, ast.NotEq):
-                        ok = left is not right
-                    else:
-                        ok = False
-                else:
+                steps.append((isinstance(op, ast.Eq), isinstance(op, ast.NotEq), cmp_fn, self._compile_node(comp)))
+            steps_t = tuple(steps)
+
+            if len(steps_t) == 1:
+                is_eq, is_ne, cmp_fn, r_fn = steps_t[0]
+
+                def _cmp1(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> bool:
+                    left = l_fn(ctx, ef)
+                    right = r_fn(ctx, ef)
+                    if left is None or right is None:
+                        return (left is right) if is_eq else ((left is not right) if is_ne else False)
                     try:
-                        ok = bool(cmp_fn(left, right))
+                        return bool(cmp_fn(left, right))
                     except TypeError:
-                        ok = False
-                if not ok:
-                    return False
-                left = right
-            return True
+                        return False
+
+                return _cmp1
+
+            def _cmp_multi(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> bool:
+                left = l_fn(ctx, ef)
+                for is_eq, is_ne, cmp_fn, r_fn in steps_t:
+                    right = r_fn(ctx, ef)
+                    if left is None or right is None:
+                        ok = (left is right) if is_eq else ((left is not right) if is_ne else False)
+                    else:
+                        try:
+                            ok = bool(cmp_fn(left, right))
+                        except TypeError:
+                            ok = False
+                    if not ok:
+                        return False
+                    left = right
+                return True
+
+            return _cmp_multi
         if isinstance(node, ast.Call):
             fn_name = node.func.id  # validated above
-            fn = (extra_funcs or {}).get(fn_name) or _SAFE_FUNCS.get(fn_name)
-            if not fn:
-                raise ValueError(f"Unknown function '{fn_name}'")
-            args = [self._eval_node(a, ctx, extra_funcs) for a in node.args]
-            if fn_name != "coalesce" and any(a is None for a in args):
-                return None
-            try:
-                return fn(*args)
-            except (ValueError, TypeError, ZeroDivisionError):
-                return None
+            static_fn = _SAFE_FUNCS.get(fn_name)
+            arg_fns = tuple(self._compile_node(a) for a in node.args)
+            check_none = fn_name != "coalesce"
+
+            def _call(ctx: Dict[str, Any], ef: Optional[Dict[str, Callable[..., Any]]]) -> Any:
+                fn = (ef.get(fn_name) if ef else None) or static_fn
+                if not fn:
+                    raise ValueError(f"Unknown function '{fn_name}'")
+                args = [f(ctx, ef) for f in arg_fns]
+                if check_none and any(a is None for a in args):
+                    return None
+                try:
+                    return fn(*args)
+                except (ValueError, TypeError, ZeroDivisionError):
+                    return None
+
+            return _call
         if isinstance(node, ast.Attribute):
-            chain = _extract_attr_chain(node)
-            return resolve_field_path(ctx, chain)
+            chain = tuple(_extract_attr_chain(node))
+            if len(chain) == 2:
+                r0, r1 = chain
+                def _attr2(ctx: Dict[str, Any], _ef: Optional[Dict[str, Callable[..., Any]]]) -> Any:
+                    sub = ctx.get(r0)
+                    if isinstance(sub, dict):
+                        if r1 in sub:
+                            return sub[r1]
+                        sp = sub.get("spec")
+                        if isinstance(sp, dict) and r1 in sp:
+                            return sp[r1]
+                        return None
+                    return resolve_field_path(ctx, chain)
+                return _attr2
+            return lambda ctx, _ef, ch=chain: resolve_field_path(ctx, ch)
         if isinstance(node, ast.Name):
-            if node.id in ("True", "true"):
-                return True
-            if node.id in ("False", "false"):
-                return False
-            if node.id in ("None", "null"):
+            nid = node.id
+            if nid in ("True", "true"):
+                return lambda _ctx, _ef: True
+            if nid in ("False", "false"):
+                return lambda _ctx, _ef: False
+            if nid in ("None", "null"):
+                return lambda _ctx, _ef: None
+
+            def _name(ctx: Dict[str, Any], _ef: Optional[Dict[str, Callable[..., Any]]]) -> Any:
+                if nid in ctx:
+                    return ctx[nid]
+                sp = ctx.get("spec")
+                if isinstance(sp, dict) and nid in sp:
+                    return sp[nid]
                 return None
-            if node.id in ctx:
-                return ctx[node.id]
-            if isinstance(ctx.get("spec"), dict) and node.id in ctx["spec"]:
-                return ctx["spec"][node.id]
-            return None
+
+            return _name
         raise ValueError(f"Unsupported AST construct '{type(node).__name__}'")
 
 

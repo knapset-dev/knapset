@@ -868,6 +868,28 @@ def solve_sets(
     nodes = 0
     truncated = False
 
+    # Pre-assign each rule to the exact search depth where its last slot becomes bound
+    slot_depth = {s: idx for idx, s in enumerate(search_order)}
+    rules_at_depth: List[List[RuleSpec]] = [[] for _ in range(n_slots)]
+    always_rules: List[RuleSpec] = []
+    for rule in parsed_rules:
+        depths = [slot_depth[s] for s in rule.slots_involved if s in slot_depth]
+        if any(s not in slot_depth for s in rule.slots_involved):
+            always_rules.append(rule)
+        elif not depths:
+            always_rules.append(rule)
+        else:
+            rules_at_depth[max(depths)].append(rule)
+
+    for rule in always_rules:
+        if not rule.evaluate({}):
+            return [], {
+                "mode": "solve",
+                "slot_counts": {s: len(filtered_pools[s]) for s in slot_names},
+                "nodes_explored": 0,
+                "feasible_count": 0,
+            }
+
     def _search(
         depth: int,
         current_set: Dict[str, Dict[str, Any]],
@@ -879,15 +901,12 @@ def solve_sets(
         if nodes >= max_nodes:
             truncated = True
             return
-        if should_abort is not None and (nodes & 0xFF) == 0 and should_abort():
+        if should_abort is not None and (nodes & 0x3F) == 0 and should_abort():
             truncated = True
             return
         nodes += 1
 
         if depth == n_slots:
-            for rule in parsed_rules:
-                if not rule.evaluate(current_set):
-                    return
             metrics: Dict[str, float] = {}
             for lim in parsed_limits:
                 ok, val = lim.evaluate_set(current_set, slot_names=slot_names)
@@ -918,6 +937,7 @@ def solve_sets(
 
         sname = search_order[depth]
         pool = pruned_slots[sname]
+        depth_rules = rules_at_depth[depth]
 
         for idx, (cand, cand_util) in enumerate(pool):
             if nodes >= max_nodes:
@@ -941,10 +961,10 @@ def solve_sets(
             current_set[sname] = cand
             current_slot_scores[sname] = cand_util
 
-            # Partial rule early pruning
+            # Partial rule early pruning (only check rules that just became evaluable at this depth)
             partial_ok = True
-            for rule in parsed_rules:
-                if rule.is_evaluable(current_set) and not rule.evaluate(current_set):
+            for rule in depth_rules:
+                if not rule.evaluate(current_set):
                     partial_ok = False
                     break
             if partial_ok:
