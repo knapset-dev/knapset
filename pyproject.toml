@@ -43,7 +43,6 @@ py-modules = [
     "preset_loader",
     "solver_engine",
     "theme_config",
-    "tui",
     "v2_cli",
     "web_server",
 ]
@@ -52,7 +51,9 @@ py-modules = [
 include = [
     "sources*",
     "marketplace*",
+    "tui*",
+    "web_assets*",
 ]
 
 [tool.setuptools.package-data]
-"*" = ["*.json", "docs/*.md"]
+"*" = ["*.json", "*.html", "docs/*.md"]

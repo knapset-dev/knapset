@@ -16,8 +16,8 @@ package() {
   install -d "${pkgdir}/usr/lib/${pkgname}" "${pkgdir}/usr/bin"
   cp -a \
     app_paths.py enricher.py formula_engine.py main.py mcp_server.py \
-    preset_loader.py solver_engine.py theme_config.py tui.py v2_cli.py \
-    web_server.py configs docs marketplace sources \
+    preset_loader.py solver_engine.py theme_config.py v2_cli.py \
+    web_server.py configs docs marketplace sources tui web_assets \
     "${pkgdir}/usr/lib/${pkgname}/"
 
   find "${pkgdir}/usr/lib/${pkgname}" -type d -name '__pycache__' -exec rm -rf {} +
